@@ -1,0 +1,145 @@
+# ==============================================================================
+# FULLY OPTIMIZED COBAYA CONFIGURATION FOR PRTOE + POLYCHORD (FAST RUN)
+# ==============================================================================
+
+# Enable top-level debug logging for full traceback output
+debug: True
+
+# Top-level output directory and prefix for chains
+output: chains/prtoe_poly_optimized
+
+# 1. Likelihoods (CMB, BAO, and Supernovae/SH0ES)
+likelihood:
+  planck_2018_lowl.TT: null
+  planck_2018_lowl.EE: null
+  planck_2018_highl_plik.TTTEEE_lite: null
+  planck_2018_lensing.clik: null
+  bao.sixdf_2011_bao: null
+  bao.sdss_dr7_mgs: null
+  bao.sdss_dr12_consensus_final: null
+  bao.desi_2024_bao_all: null
+  sn.pantheonplusshoes: null
+
+# 2. Theory Provider (Custom CLASS Wrapper with Fast-Precision Settings)
+theory:
+  classy:
+    path: /mnt/c/Users/themi/projects/prtoe_class
+    stop_at_error: False
+    extra_args:
+      use_prtoe: 'yes'
+      base_path: /mnt/c/Users/themi/projects/prtoe_class
+      gauge: newtonian
+      # CLASS Fast-Precision Parameters (from cl_permille.pre)
+      hyper_flat_approximation_nu: 7000.
+      transfer_neglect_delta_k_S_t0: 0.17
+      transfer_neglect_delta_k_S_t1: 0.05
+      transfer_neglect_delta_k_S_t2: 0.17
+      transfer_neglect_delta_k_S_e: 0.13
+      delta_l_max: 1000
+
+# 3. Parameter Dictionary (Priors and Constraints)
+params:
+  # --- Narrowed Standard Cosmological Priors (5-sigma CMB constraints) ---
+  omega_b:
+    prior:
+      min: 0.0215
+      max: 0.0235
+    ref: 0.0224
+    proposal: 0.0001
+    latex: \Omega_\mathrm{b} h^2
+  omega_cdm:
+    prior:
+      min: 0.115
+      max: 0.125
+    ref: 0.120
+    proposal: 0.001
+    latex: \Omega_\mathrm{c} h^2
+  H0:
+    prior:
+      min: 62.0
+      max: 78.0
+    ref: 67.4
+    proposal: 0.5
+    latex: H_0
+  logA:
+    prior:
+      min: 2.95
+      max: 3.15
+    ref: 3.05
+    proposal: 0.005
+    latex: \ln(10^{10} A_\mathrm{s})
+    drop: true
+  A_s:
+    value: 'lambda logA: 1e-10 * np.exp(logA)'
+  n_s:
+    prior:
+      min: 0.94
+      max: 0.99
+    ref: 0.965
+    proposal: 0.003
+    latex: n_\mathrm{s}
+  
+  # --- Sample z_reio directly to avoid unstable tau_reio shooting ---
+  z_reio:
+    prior:
+      min: 6.0
+      max: 10.0
+    ref: 8.0
+    proposal: 0.1
+    latex: z_\mathrm{reio}
+
+  # --- Planck Nuisance Parameter for Lite Likelihood ---
+  A_planck:
+    prior:
+      dist: norm
+      loc: 1.0
+      scale: 0.0025
+    ref: 1.0
+    proposal: 0.00025
+    latex: A_\mathrm{planck}
+
+  # --- Custom PRTOE Model Parameters ---
+  # Widen the coupling prior to allow real modified gravity effects
+  prtoe_xi:
+    prior:
+      min: 0.0
+      max: 0.001
+    ref: 0.0001
+    proposal: 0.00005
+    latex: \xi
+
+  # Log-uniform kinetic coupling using change of variables
+  log_prtoe_beta:
+    prior:
+      min: -8.0
+      max: -4.0
+    ref: -6.0
+    proposal: 0.1
+    latex: \log_{10}(\beta_\mathrm{prtoe})
+    drop: true
+  prtoe_beta:
+    value: 'lambda log_prtoe_beta: 10**log_prtoe_beta'
+    latex: \beta_\mathrm{prtoe}
+
+  prtoe_lambda:
+    prior:
+      min: 0.0
+      max: 1.0
+    ref: 0.10
+    proposal: 0.01
+    latex: \lambda_\mathrm{prtoe}
+    
+  prtoe_mass:
+    value: 0.05
+    latex: m
+    
+  # Fix v0 to remove its parameter volume penalty
+  prtoe_v0:
+    value: 0.685
+    latex: v_{0,\mathrm{prtoe}}
+
+# 4. Sampler Configuration (Optimized PolyChord settings)
+sampler:
+  polychord:
+    nlive: 200                # Reduced live points to save 20% run time
+    num_repeats: 20            # Reduced repeats to match dimensionality, saving 33% run time

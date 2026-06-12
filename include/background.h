@@ -119,9 +119,47 @@ struct background
   double phi_prime_ini_scf;/**< \f$ d\phi(t_0)/d\tau \f$: scalar field initial derivative wrt conformal time */
   int scf_parameters_size; /**< size of scf_parameters */
   double varconst_alpha; /**< finestructure constant for varying fundamental constants */
+  double xi_prtoe;      /**< Non-minimal coupling parameter xi */
+  double lambda_prtoe;  /**< Potential parameter lambda */
+  double beta_prtoe;    /**< Interaction coupling beta */
+  double V0_prtoe;      /**< Potential scaling V0 */
+  double zeta_prtoe;    /**< Vainshtein screening parameter zeta */
+  double M_prtoe;       /**< High-energy screening scale M */
+  double alpha_prtoe;   /**< Interaction coupling alpha */
+  double M_ew_prtoe;    /**< Electroweak scale M_EW */
+  double H_vac_floor;   /**< Baseline vacuum expansion floor in km/s/Mpc */
+  double g_b_prtoe;     /**< Baryonic field coupling multiplier */
+  double sigma_prtoe;   /**< PRTOE Displacement coupling sigma */
+  double rho0_prtoe;    /**< PRTOE Reference density rho_0 */
+  double gamma_prtoe;   /**< PRTOE Acceleration constant gamma */
   double varconst_me; /**< electron mass for varying fundamental constants */
+  double g_c_prtoe;     /**< Dark Matter field coupling multiplier */
   enum varconst_dependence varconst_dep; /**< dependence of the varying fundamental constants as a function of time */
+
+  // New PRTOE parameters
+  double prtoe_xi;
+  double prtoe_beta;
+  double prtoe_lambda;
+  double prtoe_mass;
+  double prtoe_v0;
+  double m_prtoe;
+  double phi_0_prtoe;
+  short use_prtoe;
   double varconst_transition_redshift; /**< redshift of transition between varied fundamental constants and normal fundamental constants in the 'varconst_instant' case*/
+
+  /* Indices for the PRTOE background storage in table (index_bg) */
+  int index_bg_phi_prtoe;   /**< Index for the scalar field phi */
+  int index_bg_dphi_prtoe;  /**< Index for conformal time derivative d(phi)/dtau */
+  int index_bg_rho_prtoe;   /**< Energy density of the PRTOE fluid */
+  int index_bg_p_prtoe;     /**< Pressure of the PRTOE fluid */
+  int index_bg_rho_dark_energy;
+  int index_bg_p_dark_energy;
+
+  /* Integration indices for the PRTOE ODE solver (index_bi) */
+  int index_bi_phi_prtoe;    /**< Field value in integration vector */
+  int index_bi_dphi_prtoe;   /**< Conformal derivative in integration vector */
+
+  double R_curvature;       /**< Ricci Scalar R */
 
   //@}
 
@@ -561,6 +599,9 @@ extern "C" {
                  struct background *pba,
                  double phi
                  );
+
+  int background_prtoe_potential(struct background * pba, double phi, double * V, double * dV, double * ddV);
+
 
   /** Coupling between scalar field and matter **/
   double Q_scf(

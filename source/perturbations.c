@@ -3947,8 +3947,12 @@ int perturbations_vector_init(
 
     /* scalar field */
 
-    class_define_index(ppv->index_pt_phi_scf,pba->has_scf,index_pt,1); /* scalar field density */
-    class_define_index(ppv->index_pt_phi_prime_scf,pba->has_scf,index_pt,1); /* scalar field velocity */
+    class_define_index(ppv->index_pt_phi_scf,pba->has_scf && pba->use_prtoe == _FALSE_,index_pt,1); /* scalar field density */
+    class_define_index(ppv->index_pt_phi_prime_scf,pba->has_scf && pba->use_prtoe == _FALSE_,index_pt,1); /* scalar field velocity */
+
+    /* PRTOE scalar field perturbations */
+    class_define_index(ppv->index_pt_delta_phi, pba->use_prtoe && _FALSE_, index_pt, 1);
+    class_define_index(ppv->index_pt_ddelta_phi, pba->use_prtoe && _FALSE_, index_pt, 1);
 
     /* perturbed recombination: the indices are defined once tca is off. */
     if ( (ppt->has_perturbed_recombination == _TRUE_) && (ppw->approx[ppw->index_ap_tca] == (int)tca_off) ){
@@ -4414,7 +4418,7 @@ int perturbations_vector_init(
         }
       }
 
-      if (pba->has_scf == _TRUE_) {
+      if (pba->has_scf == _TRUE_ && pba->use_prtoe == _FALSE_) {
 
         ppv->y[ppv->index_pt_phi_scf] =
           ppw->pv->y[ppw->pv->index_pt_phi_scf];
@@ -5471,7 +5475,7 @@ int perturbations_initial_conditions(struct precision * ppr,
         /* if use_ppf == _TRUE_, y[ppw->pv->index_pt_Gamma_fld] will be automatically set to zero, and this is what we want (although one could probably work out some small nonzero initial conditions: TODO) */
       }
 
-      if (pba->has_scf == _TRUE_) {
+      if (pba->has_scf == _TRUE_ && pba->use_prtoe == _FALSE_) {
         /** - ---> Canonical field (solving for the perturbations):
          *  initial perturbations set to zero, they should reach the attractor soon enough.
          *  - --->  TODO: Incorporate the attractor IC from 1004.5509.
@@ -5487,6 +5491,11 @@ int perturbations_initial_conditions(struct precision * ppr,
         ppw->pv->y[ppw->pv->index_pt_phi_prime_scf] = 0.;
         /* delta_fld expression * rho_scf with the w = 1/3, c_s = 1
            a*a/ppw->pvecback[pba->index_bg_phi_prime_scf]*( - ktau_two/4.*(1.+1./3.)*(4.-3.*1.)/(4.-6.*(1/3.)+3.*1.)*ppw->pvecback[pba->index_bg_rho_scf] - ppw->pvecback[pba->index_bg_dV_scf]*ppw->pv->y[ppw->pv->index_pt_phi_scf])* ppr->curvature_ini * s2_squared; */
+
+        if (pba->use_prtoe == _TRUE_ && _FALSE_) {
+          ppw->pv->y[ppw->pv->index_pt_delta_phi] = 0.0;
+          ppw->pv->y[ppw->pv->index_pt_ddelta_phi] = 0.0;
+        }
       }
 
       /* all relativistic relics: ur, early ncdm, dr */
@@ -5750,7 +5759,7 @@ int perturbations_initial_conditions(struct precision * ppr,
       }
 
       /* scalar field: check */
-      if (pba->has_scf == _TRUE_) {
+      if (pba->has_scf == _TRUE_ && pba->use_prtoe == _FALSE_) {
         alpha_prime = 0.0;
         /* - 2. * a_prime_over_a * alpha + eta
            - 4.5 * (a2/k2) * ppw->rho_plus_p_shear; */
@@ -5760,6 +5769,14 @@ int perturbations_initial_conditions(struct precision * ppr,
           (-2.*a_prime_over_a*alpha*ppw->pvecback[pba->index_bg_phi_prime_scf]
            -a*a* dV_scf(pba,ppw->pvecback[pba->index_bg_phi_scf])*alpha
            +ppw->pvecback[pba->index_bg_phi_prime_scf]*alpha_prime);
+
+        if (pba->use_prtoe == _TRUE_ && _FALSE_) {
+          ppw->pv->y[ppw->pv->index_pt_delta_phi] += alpha * ppw->pvecback[pba->index_bg_dphi_prtoe];
+          ppw->pv->y[ppw->pv->index_pt_ddelta_phi] +=
+            (-2.*a_prime_over_a*alpha*ppw->pvecback[pba->index_bg_dphi_prtoe]
+             -a*a* dV_scf(pba,ppw->pvecback[pba->index_bg_phi_prtoe])*alpha
+             +ppw->pvecback[pba->index_bg_dphi_prtoe]*alpha_prime);
+        }
       }
 
       if ((pba->has_ur == _TRUE_) || (pba->has_ncdm == _TRUE_) || (pba->has_dr == _TRUE_)  || (pba->has_idr == _TRUE_)) {
@@ -6559,6 +6576,24 @@ int perturbations_einstein(
              ppt->error_message,
              ppt->error_message);
 
+  /*
+  if (pba->use_prtoe == _TRUE_) {
+    double prtoe_phi_bg  = ppw->pvecback[pba->index_bg_phi_prtoe];
+    double prtoe_dphi_bg = ppw->pvecback[pba->index_bg_dphi_prtoe];
+    double screening = 1.0 / (1.0 + prtoe_phi_bg * prtoe_phi_bg);
+    
+    // Effective Newton constant modification for PRTOE with smooth activation
+    double activation = 1.0 / (1.0 + exp(-(a - 0.05) / 0.005));
+    double prtoe_mu_raw = 1.0 / (1.0 + pba->prtoe_xi * screening * prtoe_phi_bg);
+    double prtoe_mu = 1.0 + activation * (prtoe_mu_raw - 1.0);
+    
+    ppw->delta_rho         *= prtoe_mu;
+    ppw->delta_p           *= prtoe_mu;
+    ppw->rho_plus_p_theta  *= prtoe_mu;
+    ppw->rho_plus_p_shear  *= prtoe_mu;
+  }
+  */
+
   /** - for scalar modes: */
 
   if (_scalars_) {
@@ -7137,7 +7172,7 @@ int perturbations_total_stress_energy(
        from rho_plus_p_shear. So the contribution from the scalar field must be below all
        species with non-zero shear.
     */
-    if (pba->has_scf == _TRUE_) {
+    if (pba->has_scf == _TRUE_ && pba->use_prtoe == _FALSE_) {
 
       if (ppt->gauge == synchronous){
         delta_rho_scf =  1./3.*
@@ -8397,7 +8432,7 @@ int perturbations_print_variables(double tau,
       shear_dr = y[ppw->pv->index_pt_F0_dr+2]*0.5/f_dr;
     }
 
-    if (pba->has_scf == _TRUE_){
+    if (pba->has_scf == _TRUE_ && pba->use_prtoe == _FALSE_){
       if (ppt->gauge == synchronous){
         delta_rho_scf =  1./3.*
           (1./a2*ppw->pvecback[pba->index_bg_phi_prime_scf]*y[ppw->pv->index_pt_phi_prime_scf]
@@ -8483,7 +8518,7 @@ int perturbations_print_variables(double tau,
         theta_dcdm += k*k*alpha;
       }
 
-      if (pba->has_scf == _TRUE_) {
+      if (pba->has_scf == _TRUE_ && pba->use_prtoe == _FALSE_) {
         delta_scf += alpha*(-3.0*H*(1.0+pvecback[pba->index_bg_p_scf]/pvecback[pba->index_bg_rho_scf]));
         theta_scf += k*k*alpha;
       }
@@ -8810,6 +8845,18 @@ int perturbations_derivs(double tau,
   pvecmetric = ppw->pvecmetric;
   pv = ppw->pv;
 
+  static double last_k = 0.0;
+  static int mode_steps = 0;
+  if (k != last_k) {
+     last_k = k;
+     mode_steps = 0;
+  }
+  mode_steps++;
+  if (mode_steps > 5000 && mode_steps % 1000 == 0) {
+     printf("STALL WARNING: k=%e, steps=%d, a=%e, tau=%e\n", k, mode_steps, ppw->pvecback[pba->index_bg_a], tau);
+     fflush(stdout);
+  }
+
   /** - get background/thermo quantities in this point */
 
   class_call(background_at_tau(pba,
@@ -9076,11 +9123,13 @@ int perturbations_derivs(double tau,
     if (ppw->approx[ppw->index_ap_tca] == (int)tca_off) {
 
       /* without tca */
+      /* PRTOE Apparent Acceleration: -gamma * grad(phi) / phi */
+      double prtoe_accel = 0.0;
 
-      /** - ----> perturbed recombination has an impact **/
       dy[pv->index_pt_theta_b] =
         - a_prime_over_a*theta_b
         + metric_euler
+        + prtoe_accel
         + k2*delta_p_b_over_rho_b
         + R*pvecthermo[pth->index_th_dkappa]*(theta_g-theta_b);
 
@@ -9096,12 +9145,16 @@ int perturbations_derivs(double tau,
                  error_message,
                  error_message);
 
+      /* PRTOE Apparent Acceleration in TCA: acts on the baryon component */
+      double prtoe_accel = 0.0;
+
       /* perturbed recombination has an impact **/
       dy[pv->index_pt_theta_b] =
         (-a_prime_over_a*theta_b
          +k2*(delta_p_b_over_rho_b+R*(delta_g/4.-s2_squared*ppw->tca_shear_g))
+         + prtoe_accel
          +R*ppw->tca_slip)/(1.+R)
-        +metric_euler;
+         +metric_euler;
 
       if (pth->has_idm_g == _TRUE_) {
         dy[pv->index_pt_theta_b] +=
@@ -9224,8 +9277,36 @@ int perturbations_derivs(double tau,
 
       if (ppt->gauge == newtonian) {
         dy[pv->index_pt_delta_cdm] = -(y[pv->index_pt_theta_cdm]+metric_continuity); /* cdm density */
-
-        dy[pv->index_pt_theta_cdm] = - a_prime_over_a*y[pv->index_pt_theta_cdm] + metric_euler; /* cdm velocity */
+        
+        if (pba->use_prtoe == _TRUE_) {
+          /* PRTOE PHASING UPGRADE: TRI-FACTOR DENSITY & SCALE CUSHION */
+          double k_baryon_scale = 1.0; // h/Mpc scale where baryonic effects dominate
+          double z_current = (1.0 / a) - 1.0;
+          double rho_local_m = pvecback[pba->index_bg_rho_b] + pvecback[pba->index_bg_rho_cdm];
+          
+          double prtoe_rho_crit = pba->H0 * pba->H0;
+          double density_weight = 1.0 / (1.0 + pow((prtoe_rho_crit / rho_local_m), 2));
+          double scale_weight = 1.0 / (1.0 + exp(-(k - k_baryon_scale) / 0.2));
+          double time_weight = 1.0 / (1.0 + z_current);
+          
+          double dynamic_beta = pba->prtoe_beta * density_weight * scale_weight * time_weight;
+          
+          double phi_current = pvecback[pba->index_bg_phi_prtoe];
+          double cushion_x = (dynamic_beta * dynamic_beta * k2) / (1.0 + phi_current * phi_current);
+          double prtoe_cushion = 0.1 + 0.9 / (1.0 + cushion_x);
+          
+          double activation = 1.0 / (1.0 + exp(-(a - 0.05) / 0.005)) - 0.000335;
+          if (activation < 0.0) activation = 0.0;
+          double prtoe_mu_raw = (1.0 / (1.0 + pba->prtoe_xi * (1.0 / (1.0 + phi_current * phi_current)) * phi_current));
+          double prtoe_mu = 1.0 + activation * (prtoe_mu_raw - 1.0);
+          
+          double A_rho_local = pvecmetric[ppw->index_mt_psi];
+          
+          dy[pv->index_pt_theta_cdm] = - a_prime_over_a * y[pv->index_pt_theta_cdm] 
+                                        + k2 * prtoe_mu * prtoe_cushion * A_rho_local;
+        } else {
+          dy[pv->index_pt_theta_cdm] = - a_prime_over_a*y[pv->index_pt_theta_cdm] + metric_euler; /* cdm velocity */
+        }
       }
 
       /** - ----> synchronous gauge: cdm density only (velocity set to zero by definition of the gauge) */
@@ -9392,18 +9473,20 @@ int perturbations_derivs(double tau,
 
     /** - ---> scalar field (scf) */
 
-    if (pba->has_scf == _TRUE_) {
+    if (pba->has_scf == _TRUE_ && pba->use_prtoe == _FALSE_) {
 
       /** - ----> field value */
 
       dy[pv->index_pt_phi_scf] = y[pv->index_pt_phi_prime_scf];
-
-      /** - ----> Klein Gordon equation */
-
       dy[pv->index_pt_phi_prime_scf] =  - 2.*a_prime_over_a*y[pv->index_pt_phi_prime_scf]
-        - metric_continuity*pvecback[pba->index_bg_phi_prime_scf] //  metric_continuity = h'/2
-        - (k2 + a2*pvecback[pba->index_bg_ddV_scf])*y[pv->index_pt_phi_scf]; //checked
+        - metric_continuity*pvecback[pba->index_bg_phi_prime_scf]
+        - (k2 + a2*pvecback[pba->index_bg_ddV_scf])*y[pv->index_pt_phi_scf];
 
+    }
+
+    if (pba->use_prtoe == _TRUE_ && _FALSE_) {
+      dy[pv->index_pt_delta_phi] = 0.0;
+      dy[pv->index_pt_ddelta_phi] = 0.0;
     }
 
     /** - ---> ultra-relativistic neutrino/relics (ur) */

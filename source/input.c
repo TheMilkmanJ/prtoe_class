@@ -3372,11 +3372,55 @@ int input_read_parameters_species(struct file_content * pfc,
     }
   }
 
+  /** 8.b.5) PRTOE v4.0 Kinetic Engine Registry */
+  class_read_double("zeta_prtoe", pba->zeta_prtoe);
+  class_read_double("M_prtoe", pba->M_prtoe);
+  class_read_double("alpha_prtoe", pba->alpha_prtoe);
+  class_read_double("M_ew_prtoe", pba->M_ew_prtoe);
+  class_read_double("H_vac_floor", pba->H_vac_floor);
+  class_read_double("g_b_prtoe", pba->g_b_prtoe);
+  class_read_double("sigma_prtoe", pba->sigma_prtoe);
+  class_read_double("rho0_prtoe", pba->rho0_prtoe);
+  class_read_double("gamma_prtoe", pba->gamma_prtoe);
+  class_read_double("g_c_prtoe", pba->g_c_prtoe);
+
+  /* PRTOE v1.0 Production Parameters */
+  class_read_double("prtoe_xi", pba->prtoe_xi);
+  class_read_double("prtoe_beta", pba->prtoe_beta);
+  class_read_double("prtoe_lambda", pba->prtoe_lambda);
+  class_read_double("prtoe_mass", pba->prtoe_mass);
+  class_read_double("prtoe_v0", pba->prtoe_v0);
+  class_read_flag("use_prtoe", pba->use_prtoe);
+
+  /* Set defaults for prtoe parameters based on prtoe parameters */
+  pba->xi_prtoe = pba->prtoe_xi;
+  pba->beta_prtoe = pba->prtoe_beta;
+  pba->lambda_prtoe = pba->prtoe_lambda;
+  pba->m_prtoe = pba->prtoe_mass;
+  pba->V0_prtoe = pba->prtoe_v0;
+  pba->phi_0_prtoe = pba->phi_ini_scf;
+
+  /* Explicit _prtoe parameter readings (overwrites defaults if present in input file) */
+  class_read_double("V0_prtoe", pba->V0_prtoe);
+  class_read_double("m_prtoe", pba->m_prtoe);
+  class_read_double("phi_0_prtoe", pba->phi_0_prtoe);
+  class_read_double("xi_prtoe", pba->xi_prtoe);
+  class_read_double("beta_prtoe", pba->beta_prtoe);
+  class_read_double("lambda_prtoe", pba->lambda_prtoe);
+
+  if (pba->use_prtoe == _TRUE_) {
+    /* Scale parameters to physical CLASS units (Mpc^-2, Mpc^-1, Mpc) using H0 */
+    pba->V0_prtoe = 3.0 * pba->V0_prtoe * pba->H0 * pba->H0;
+    pba->m_prtoe = pba->m_prtoe * pba->H0;
+    pba->prtoe_beta = pba->prtoe_beta / pba->H0;
+    pba->beta_prtoe = pba->beta_prtoe / pba->H0;
+
+    pba->has_scf = _TRUE_;
+    fprintf(stdout, " -> PRTOE Framework Activated (v1.0 Screened Model Bound Loaded)\n");
+  }
+
   return _SUCCESS_;
-
 }
-
-
 /**
  * Read the parameters of injection structure
  * (These are all exotic processes of energy injection)
@@ -4294,7 +4338,7 @@ int input_read_parameters_primordial(struct file_content * pfc,
                    errmsg,
                    errmsg);
         /* Complete set of parameters */
-        if ((flag1 == _TRUE_) && !((strstr(string1,"SCC") != NULL) || (strstr(string1,"scc") != NULL))){
+        if ((flag1 == _TRUE_) && !((strstr(string1,"SCC") != NULL) || (strstr(string1,"scc") != NULL))) {
           class_read_double("n_t",ppm->n_t);
         }
         else {
@@ -5561,7 +5605,6 @@ int input_read_parameters_output(struct file_content * pfc,
   class_read_int("lensing_verbose",ple->lensing_verbose);
   class_read_int("distortions_verbose",psd->distortions_verbose);
   class_read_int("output_verbose",pop->output_verbose);
-
   return _SUCCESS_;
 
 }
@@ -5762,7 +5805,7 @@ int input_default_params(struct background *pba,
   ppt->get_perturbations_in_current_gauge = _FALSE_;
 
   /** 5) Hubble parameter */
-  pba->h = 0.67810;
+  pba->h = 0.64820;
   pba->H0 = pba->h*1.e5/_c_;
 
   /** 6) Primordial Helium fraction */
@@ -5928,6 +5971,17 @@ int input_default_params(struct background *pba,
   pba->phi_prime_ini_scf = 1;          //     factors of the radiation attractor values
   /** 9.b.3) Tuning parameter */
   pba->scf_tuning_index = 0;
+
+  /** 9.b.4) PRTOE Defaults (Set to Candidate Set 1: Electroweak Scale) */
+  pba->H_vac_floor = 64.1218;
+  pba->M_ew_prtoe = 100.0;
+  pba->alpha_prtoe = 0.1;
+  pba->prtoe_beta = 0.1;
+  pba->prtoe_xi = 9.5e-5;
+  pba->prtoe_lambda = 0.05;
+  pba->prtoe_v0 = 1.5;
+  pba->g_b_prtoe = 1.0;
+  pba->g_c_prtoe = 1.0;
 
   /**
    * Deafult to input_read_parameters_heating
@@ -6243,6 +6297,22 @@ int input_default_params(struct background *pba,
   psd->distortions_verbose = 0;
   pop->output_verbose = 0;
 
-  return _SUCCESS_;
+  /* PRTOE v1.0 Production Defaults */
+  pba->rho0_prtoe = 1.0;
+  pba->gamma_prtoe = 0.05;
+  pba->prtoe_xi = 1.0e-7;
+  pba->prtoe_beta = 1.0e-6;
+  pba->prtoe_lambda = 0.10;
+  pba->prtoe_mass = 1.0e-20;
+  pba->prtoe_v0 = 0.685;
+  pba->use_prtoe = _FALSE_;
 
+  pba->V0_prtoe = 0.685;
+  pba->m_prtoe = 1.0e-20;
+  pba->phi_0_prtoe = 1.0;
+  pba->xi_prtoe = 1.0e-7;
+  pba->beta_prtoe = 1.0e-6;
+  pba->lambda_prtoe = 0.10;
+
+  return _SUCCESS_;
 }

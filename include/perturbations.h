@@ -482,6 +482,10 @@ struct perturbations_vector
   int index_pt_Gamma_fld;  /**< unique dark energy dynamical variable in PPF case */
   int index_pt_phi_scf;  /**< scalar field density */
   int index_pt_phi_prime_scf;  /**< scalar field velocity */
+
+  /* PRTOE scalar field perturbations */
+  int index_pt_delta_phi;    
+  int index_pt_ddelta_phi;
   int index_pt_delta_ur; /**< density of ultra-relativistic neutrinos/relics */
   int index_pt_theta_ur; /**< velocity of ultra-relativistic neutrinos/relics */
   int index_pt_shear_ur; /**< shear of ultra-relativistic neutrinos/relics */

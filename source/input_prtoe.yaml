@@ -1,0 +1,12 @@
+params:
+  alpha_prtoe:
+    prior:
+      min: 0.01
+      max: 2.0
+    ref: 0.1
+    proposal: 0.02
+  g_c_prtoe:
+    prior:
+      min: 0.5
+      max: 1.5
+    ref: 1.0

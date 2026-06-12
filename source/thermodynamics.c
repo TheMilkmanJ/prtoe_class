@@ -2321,7 +2321,7 @@ int thermodynamics_reionization_evolve_with_tau(
 
   class_test(tau_sup < pth->tau_reio,
              pth->error_message,
-             "parameters are such that reionization cannot start after z_start_max");
+             "condition (tau_sup < pth->tau_reio) is true; parameters are such that reionization cannot start after z_start_max");
 
   /** - Restore initial conditions */
   ptv->y[ptv->index_ti_D_Tmat] = ptvs->y[ptvs->index_ti_D_Tmat];
