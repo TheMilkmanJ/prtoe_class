@@ -1,5 +1,6 @@
 # ==============================================================================
 # FULLY OPTIMIZED COBAYA CONFIGURATION FOR PRTOE + POLYCHORD (FAST RUN)
+# WITH CORRECTED PARAMETER BOUNDS FOR STABLE SAMPLING
 # ==============================================================================
 
 # Enable top-level debug logging for full traceback output
@@ -98,7 +99,7 @@ params:
     proposal: 0.00025
     latex: A_\mathrm{planck}
 
-  # --- Custom PRTOE Model Parameters ---
+  # --- Custom PRTOE Model Parameters (UPDATED BOUNDS) ---
   # Fixed via potential geometry
   lambda_prtoe:
     value: 0.05
@@ -106,18 +107,21 @@ params:
     value: 0.05
 
   # Flat prior centered on empirical LVK peak 0.048
+  # AUDIT NOTE: delta_prtoe previously had bounds [0.02, 0.08] 
+  # UPDATED: Expanded to allow weaker/stronger gradient-density coupling
   delta_prtoe:
     prior:
-      min: 0.02
-      max: 0.08
+      min: 0.001      # EXPANDED from 0.02: Allow weaker coupling
+      max: 0.5        # EXPANDED from 0.08: Allow stronger coupling
     ref:
       dist: norm
-      loc: 0.048
-      scale: 0.01
-    proposal: 0.01
-    latex: \Delta
+      loc: 0.05
+      scale: 0.1
+    proposal: 0.05
+    latex: \Delta_\mathrm{prtoe}
 
   # Strict DHOST Stability Wedge boundary
+  # AUDIT NOTE: xi_prtoe sampled in [1e-7, 1.2e-5] 
   xi_prtoe:
     prior:
       min: 1.0e-7
@@ -127,15 +131,17 @@ params:
       loc: 5.0e-6
       scale: 1.0e-6
     proposal: 1.0e-6
-    latex: \xi
+    latex: \xi_\mathrm{prtoe}
 
   # Log-uniform kinetic coupling using change of variables
+  # AUDIT NOTE: Kinetic coupling was bounded too tightly at [-8, -4]
+  # UPDATED: Expanded range to allow field to reach "Goldilocks zone"
   log_beta_prtoe:
     prior:
-      min: -8.0
-      max: -4.0
+      min: -10.0      # EXPANDED from -8: Lower 10^-10
+      max: -2.0       # EXPANDED from -4: Raise to 10^-2
     ref: -6.0
-    proposal: 0.1
+    proposal: 0.2     # INCREASED from 0.1 for better sampling
     latex: \log_{10}(\beta_\mathrm{prtoe})
     drop: true
   beta_prtoe:
@@ -148,12 +154,14 @@ params:
     latex: V_{0,\mathrm{prtoe}}
 
   # Dynamically sampled screening softening parameter
+  # AUDIT NOTE: zeta_prtoe previously bounded at [0.001, 1.0]
+  # UPDATED: Raised minimum and expanded maximum for effective screening
   zeta_prtoe:
     prior:
-      min: 0.001
-      max: 1.0
-    ref: 0.1
-    proposal: 0.05
+      min: 0.01       # RAISED from 0.001: Minimum for effective screening
+      max: 10.0       # EXPANDED from 1.0: Allow stronger screening effects
+    ref: 0.5
+    proposal: 0.2     # INCREASED from 0.05 for broader exploration
     latex: \zeta_\mathrm{prtoe}
 
   # --- Derived parameters to track in the chains ---
