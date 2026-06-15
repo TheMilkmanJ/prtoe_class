@@ -2811,6 +2811,10 @@ int background_derivs(
     }
     double alpha2_rho_grad = alpha2_over_Mew2 * pvecback_rho_m * rho_m_dot_over_rho_m;
     
+    /* Gradient-density coupling via delta */
+    double delta_screened = pba->delta_prtoe * screening_factor * activation;
+    double delta_coupling = delta_screened * pvecback_rho_m * rho_m_dot_over_rho_m;
+
     /* --- Ricci Scalar R --- */
     pba->R_curvature = 6.0 * (pvecback[pba->index_bg_H_prime] + 2.0 * a * H * H + pba->K / a) / a;
     double H_conf = H * a;
@@ -2822,6 +2826,7 @@ int background_derivs(
       - a2 * dV_dphi
       + (xi_screened / 2.0) * pba->R_curvature * a2
       + alpha2_rho_grad * a2
+      + delta_coupling * a2
     ) / a / MAX(H, 1e-20) * activation;
   }
 }
