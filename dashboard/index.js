@@ -3548,7 +3548,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 You are running the modified CLASS engine equipped with the <strong>PRTOE (Pulford-Romsa Theory of Everything)</strong> cosmology model. 
             </p>
             <p style="font-size: 0.95rem; line-height: 1.6; color: #dcdde1; margin-bottom: 25px;">
-                We politely invite you to run PRTOE model configurations and evaluate their fits, comparing the resulting Bayesian evidence ($\Delta\ln\mathcal{Z}$), parameter pulls, and growth constraints against standard $\Lambda\text{CDM}$. Your test runs and feedback are highly valuable in determining if this model represents a path worth exploring further in modern cosmology.
+                If you have some free time, we would be incredibly grateful if you could run the PRTOE model configurations and evaluate their fits, comparing the resulting Bayesian evidence ($\Delta\ln\mathcal{Z}$), parameter pulls, and growth constraints against standard $\Lambda\text{CDM}$. Your test runs and feedback are highly valuable in determining if this model represents a path worth exploring further in modern cosmology.
             </p>
             <div style="display: flex; gap: 15px; justify-content: center;">
                 <button id="btn-close-proposal" class="btn" style="padding: 10px 24px; font-weight: bold; background: linear-gradient(135deg, #00d2d3, #00a8ff); border: none; border-radius: 4px; color: white; cursor: pointer; font-size: 0.9rem; box-shadow: 0 4px 15px rgba(0, 210, 211, 0.4);">I will help test PRTOE</button>
