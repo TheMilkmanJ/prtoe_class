@@ -727,7 +727,8 @@ async function checkStatus() {
         // Update stats
         statDead.textContent = data.dead_points;
         if (data.log_evidence !== null) {
-            statEvidence.textContent = `${data.log_evidence.toFixed(2)} +/- ${data.log_evidence_error.toFixed(2)}`;
+            const errText = (data.log_evidence_error !== null && data.log_evidence_error !== undefined) ? ` +/- ${data.log_evidence_error.toFixed(2)}` : '';
+            statEvidence.textContent = `${data.log_evidence.toFixed(2)}${errText}`;
             valCustom.textContent = data.log_evidence.toFixed(4);
             calculateEvidence(data.log_evidence);
         } else {
