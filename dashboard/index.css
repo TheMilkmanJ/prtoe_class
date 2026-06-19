@@ -569,3 +569,24 @@ body {
 .copy-btn:active {
     transform: scale(0.9);
 }
+
+.chart-wrapper {
+    position: relative;
+    height: 200px !important;
+    max-height: 200px !important;
+    width: 100% !important;
+}
+
+.chart-wrapper-large {
+    position: relative;
+    height: 260px !important;
+    max-height: 260px !important;
+    width: 100% !important;
+}
+
+.chart-wrapper canvas, .chart-wrapper-large canvas {
+    max-height: 100% !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    height: 100% !important;
+}

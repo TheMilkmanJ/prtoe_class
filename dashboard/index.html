@@ -6,6 +6,7 @@
     <title>CosmicDashboard - CLASS & Cobaya Controller</title>
     <link rel="stylesheet" href="index.css">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         /* Deep Space Nebula Background */
         body {
@@ -16,6 +17,77 @@
             background-size: cover !important;
             background-position: center center !important;
             background-attachment: fixed !important;
+        }
+        
+        .tab-btn {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #a4b0be;
+            padding: 8px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-family: 'Outfit', sans-serif;
+            font-size: 0.85rem;
+            transition: all 0.2s ease;
+        }
+        .tab-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+        }
+        .tab-btn.active {
+            background: linear-gradient(135deg, #00d2d3, #3867d6);
+            color: #fff;
+            border-color: transparent;
+            box-shadow: 0 0 10px rgba(0, 210, 211, 0.4);
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        .health-bar-container {
+            margin-bottom: 12px;
+        }
+        .health-bar-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.8rem;
+            color: #a4b0be;
+            margin-bottom: 4px;
+        }
+        .health-bar {
+            height: 10px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 5px;
+            overflow: hidden;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        .health-bar-fill {
+            height: 100%;
+            width: 0%;
+            transition: width 0.5s ease-in-out;
+        }
+        .wizard-row {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+            align-items: center;
+        }
+        .wizard-row label {
+            flex: 1;
+            font-size: 0.85rem;
+            color: #a4b0be;
+        }
+        .wizard-row select, .wizard-row input {
+            flex: 1.5;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 4px;
+            color: #fff;
+            padding: 6px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
         }
     </style>
 </head>
@@ -53,6 +125,26 @@
                     </div>
                 </div>
 
+                <!-- Configurable Run Template System -->
+                <div class="control-group" id="template-system-section" style="margin-top: 15px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 10px;">
+                    <label style="font-weight: bold; margin-bottom: 8px; color: #ff9ff3;">Configurable Run Template System</label>
+                    <p style="font-size: 0.72rem; color: #a4b0be; margin-bottom: 10px;">Select pre-defined standard models or save/load custom configurations.</p>
+                    <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+                        <select id="select-config-template" style="flex: 2; padding: 8px; border-radius: 4px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); color: #fff; font-size: 0.82rem;">
+                            <option value="">-- Load Preset / Custom Template --</option>
+                            <option value="lcdm_baseline">ΛCDM Baseline</option>
+                            <option value="prtoe_standard">PRTOE Standard</option>
+                            <option value="wcdm_test">wCDM Test</option>
+                            <option value="last_run">Last Run</option>
+                        </select>
+                        <button class="btn btn-glow" id="btn-load-template" style="flex: 1; padding: 6px; font-size: 0.8rem; background: linear-gradient(135deg, #3867d6, #5f27cd); color: white; border: none; font-weight: bold;">Load</button>
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                        <input type="text" id="input-template-name" placeholder="Custom Template Name..." style="flex: 2; padding: 8px; border-radius: 4px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff; font-size: 0.8rem;">
+                        <button class="btn" id="btn-save-template" style="flex: 1; padding: 6px; font-size: 0.8rem; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff;">Save Current</button>
+                    </div>
+                </div>
+
                 <!-- Run Settings -->
                 <div class="control-group" style="display: flex; gap: 15px; align-items: center; margin-top: 15px;">
                     <div style="flex: 1;">
@@ -68,6 +160,35 @@
                             <input type="checkbox" id="check-autorun-lcdm" style="width: 18px; height: 18px;">
                             <label style="margin: 0; cursor: pointer; color: #a4b0be; font-size: 0.9rem;" for="check-autorun-lcdm">Auto-run default &Lambda;CDM baseline after</label>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Parameter Freeze/Thaw System -->
+                <div class="control-group" id="freeze-thaw-section" style="margin-top: 15px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 10px;">
+                    <label style="font-weight: bold; margin-bottom: 8px; color: #00d2d3;">Parameter Freeze / Thaw</label>
+                    <p style="font-size: 0.72rem; color: #a4b0be; margin-bottom: 10px;">Toggle which parameters are sampled (thawed) or kept constant (frozen).</p>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-family: var(--font-sans); font-size: 0.8rem;">
+                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                            <input type="checkbox" class="freeze-toggle" data-param="H0" checked> H₀ (Hubble)
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                            <input type="checkbox" class="freeze-toggle" data-param="omega_cdm" checked> &omega;<sub>cdm</sub> (CDM)
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                            <input type="checkbox" class="freeze-toggle" data-param="omega_b" checked> &omega;<sub>b</sub> (Baryons)
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                            <input type="checkbox" class="freeze-toggle" data-param="xi_prtoe" checked> &xi;<sub>prtoe</sub>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                            <input type="checkbox" class="freeze-toggle" data-param="delta_prtoe" checked> &delta;<sub>prtoe</sub>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                            <input type="checkbox" class="freeze-toggle" data-param="zeta_prtoe" checked> &zeta;<sub>prtoe</sub>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                            <input type="checkbox" class="freeze-toggle" data-param="beta_prtoe" checked> &beta;<sub>prtoe</sub>
+                        </label>
                     </div>
                 </div>
 
@@ -184,82 +305,630 @@
                 </div>
             </section>
 
-            <!-- Right Panel: Bayesian Evidence Comparison -->
-            <section class="panel glassmorphic" id="results-panel">
-                <h2><span class="icon">&#x22f1;</span> Model Evidence Comparison</h2>
+            <!-- Right Panel: Bayesian Evidence Comparison & Controls -->
+            <section class="panel glassmorphic scrollable" id="results-panel">
+                <h2><span class="icon">&#x22f1;</span> Analysis &amp; Utilities Suite</h2>
                 
-                <div class="evidence-math" style="position: relative;">
-                    <button class="copy-btn" id="btn-copy-evidence" title="Copy evidence comparison" style="position: absolute; top: 10px; right: 10px; background: none; border: none; color: #a4b0be; cursor: pointer; font-size: 0.9rem; padding: 2px 6px; border-radius: 4px; transition: all 0.2s ease;">📋</button>
-                    <div class="math-row">
-                        <span class="math-label">Baseline log(Z<sub>baseline</sub>):</span>
-                        <span class="math-val" id="val-baseline">-</span>
-                    </div>
-                    <div class="math-row">
-                        <span class="math-label">Custom Model log(Z<sub>custom</sub>):</span>
-                        <span class="math-val highlight-cyan" id="val-custom">-</span>
-                    </div>
-                    <div class="math-divider"></div>
-                    <div class="math-row result-row">
-                        <span class="math-label">&Delta; log(Z):</span>
-                        <span class="math-val highlight-neon" id="val-delta">-</span>
-                    </div>
+                <!-- Tab Headers -->
+                <div class="tabs-header" style="display: flex; gap: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; margin-bottom: 15px; flex-wrap: wrap;">
+                    <button class="tab-btn active" data-tab="tab-tension">Tension &amp; Compare</button>
+                    <button class="tab-btn" data-tab="tab-curves">Cosmo Curves</button>
+                    <button class="tab-btn" data-tab="tab-corner">Posterior Corner</button>
+                    <button class="tab-btn" data-tab="tab-compare">Model Suite</button>
+                    <button class="tab-btn" data-tab="tab-stability">Stability &amp; Sensitivity</button>
+                    <button class="tab-btn" data-tab="tab-playground">PRTOE Playground</button>
+                    <button class="tab-btn" data-tab="tab-influence">Influence Map &amp; Pull</button>
+                    <button class="tab-btn" data-tab="tab-health">Run Health</button>
+                    <button class="tab-btn" data-tab="tab-utils">Utilities</button>
+                    <button class="tab-btn" data-tab="tab-autopsy">Run Autopsy &amp; Replay</button>
                 </div>
 
-                <!-- Model Tension & Stability Card -->
-                <div class="evidence-math" id="tensions-card" style="margin-top: 15px; position: relative;">
-                    <button class="copy-btn" id="btn-copy-tensions" title="Copy tension & struggles status" style="position: absolute; top: 10px; right: 10px; background: none; border: none; color: #a4b0be; cursor: pointer; font-size: 0.9rem; padding: 2px 6px; border-radius: 4px; transition: all 0.2s ease;">📋</button>
-                    <div class="jeffreys-title">Tension Resolution &amp; Stability</div>
-                    <div style="font-family: var(--font-sans); font-size: 0.85rem; margin-top: 8px; display: flex; flex-direction: column; gap: 8px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <span>H<sub>0</sub> &amp; S<sub>8</sub> Tensions:</span>
-                            <span id="stat-tensions-badge" style="padding: 2px 6px; border-radius: 4px; font-weight: bold; font-family: var(--font-mono); font-size: 0.75rem; background: rgba(255,255,255,0.05); color: #fff;">Unknown</span>
+                <!-- Tab 1: Tension & Compare -->
+                <div class="tab-content active" id="tab-tension">
+                    <div class="evidence-math" style="position: relative;">
+                        <button class="copy-btn" id="btn-copy-evidence" title="Copy evidence comparison" style="position: absolute; top: 10px; right: 10px; background: none; border: none; color: #a4b0be; cursor: pointer; font-size: 0.9rem; padding: 2px 6px; border-radius: 4px; transition: all 0.2s ease;">📋</button>
+                        <div class="math-row">
+                            <span class="math-label">Baseline log(Z<sub>baseline</sub>):</span>
+                            <span class="math-val" id="val-baseline">-</span>
                         </div>
-                        <div id="stat-ncdm-section" style="display: none; flex-direction: column; border-top: 1px dashed rgba(255,255,255,0.05); padding-top: 6px; margin-top: 2px;">
-                            <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" id="stat-ncdm-header" title="Click to view neutrino diagnostics">
-                                <span style="display: flex; align-items: center; gap: 4px;">
-                                    <span>Neutrino Sector (m_&nu;):</span>
-                                    <span id="stat-ncdm-arrow" style="font-size: 0.7rem; transition: transform 0.2s;">▶</span>
-                                </span>
-                                <span id="stat-ncdm-badge" style="padding: 2px 6px; border-radius: 4px; font-weight: bold; font-family: var(--font-mono); font-size: 0.75rem; background: rgba(255,255,255,0.05); color: #fff; border: 1px solid rgba(255,255,255,0.1);">Disabled</span>
-                            </div>
-                            <div id="stat-ncdm-details" style="display: none; padding-top: 8px; flex-direction: column; gap: 4px; border-top: 1px dashed rgba(255,255,255,0.02); margin-top: 6px; font-size: 0.78rem;">
-                                <!-- Details will be dynamically injected here -->
-                            </div>
+                        <div class="math-row">
+                            <span class="math-label">Custom Model log(Z<sub>custom</sub>):</span>
+                            <span class="math-val highlight-cyan" id="val-custom">-</span>
                         </div>
-                        <div id="stat-struggles-section" style="border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
-                            <div style="color: var(--text-secondary); font-size: 0.8rem; margin-bottom: 4px;">Model Struggles (Computation Failures):</div>
-                            <div id="stat-struggles-body" style="font-family: var(--font-mono); font-size: 0.78rem; color: #39ff14; overflow-x: auto; word-break: break-all;">
-                                Stable (0 failures)
-                            </div>
+                        <div class="math-divider"></div>
+                        <div class="math-row result-row">
+                            <span class="math-label">&Delta; log(Z):</span>
+                            <span class="math-val highlight-neon" id="val-delta">-</span>
                         </div>
                     </div>
+
+                    <!-- Model Tension & Stability Card -->
+                    <div class="evidence-math" id="tensions-card" style="margin-top: 15px; position: relative;">
+                        <button class="copy-btn" id="btn-copy-tensions" title="Copy tension & struggles status" style="position: absolute; top: 10px; right: 10px; background: none; border: none; color: #a4b0be; cursor: pointer; font-size: 0.9rem; padding: 2px 6px; border-radius: 4px; transition: all 0.2s ease;">📋</button>
+                        <div class="jeffreys-title">Tension Resolution &amp; Stability</div>
+                        <div style="font-family: var(--font-sans); font-size: 0.85rem; margin-top: 8px; display: flex; flex-direction: column; gap: 8px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <span>H<sub>0</sub> &amp; S<sub>8</sub> Tensions:</span>
+                                <span id="stat-tensions-badge" style="padding: 2px 6px; border-radius: 4px; font-weight: bold; font-family: var(--font-mono); font-size: 0.75rem; background: rgba(255,255,255,0.05); color: #fff;">Unknown</span>
+                            </div>
+                            <div id="stat-ncdm-section" style="display: none; flex-direction: column; border-top: 1px dashed rgba(255,255,255,0.05); padding-top: 6px; margin-top: 2px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" id="stat-ncdm-header" title="Click to view neutrino diagnostics">
+                                    <span style="display: flex; align-items: center; gap: 4px;">
+                                        <span>Neutrino Sector (m_&nu;):</span>
+                                        <span id="stat-ncdm-arrow" style="font-size: 0.7rem; transition: transform 0.2s;">▶</span>
+                                    </span>
+                                    <span id="stat-ncdm-badge" style="padding: 2px 6px; border-radius: 4px; font-weight: bold; font-family: var(--font-mono); font-size: 0.75rem; background: rgba(255,255,255,0.05); color: #fff; border: 1px solid rgba(255,255,255,0.1);">Disabled</span>
+                                </div>
+                                <div id="stat-ncdm-details" style="display: none; padding-top: 8px; flex-direction: column; gap: 4px; border-top: 1px dashed rgba(255,255,255,0.02); margin-top: 6px; font-size: 0.78rem;">
+                                    <!-- Details will be dynamically injected here -->
+                                </div>
+                            </div>
+                            <div id="stat-struggles-section" style="border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
+                                <div style="color: var(--text-secondary); font-size: 0.8rem; margin-bottom: 4px;">Model Struggles (CLASS Computation Failures):</div>
+                                <div id="stat-struggles-body" style="font-family: var(--font-mono); font-size: 0.78rem; color: #39ff14; overflow-x: auto; word-break: break-all;">
+                                    Stable (0 failures)
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Parameters Constraints Table -->
+                    <div class="evidence-math" id="constraints-card" style="margin-top: 15px; display: none; position: relative;">
+                        <button class="copy-btn" id="btn-copy-constraints" title="Copy 1-sigma constraints" style="position: absolute; top: 10px; right: 10px; background: none; border: none; color: #a4b0be; cursor: pointer; font-size: 0.9rem; padding: 2px 6px; border-radius: 4px; transition: all 0.2s ease;">📋</button>
+                        <div class="jeffreys-title">1-Sigma Constraints (Mean &amp; 1-&sigma;)</div>
+                        <div id="constraints-body" style="font-family: var(--font-mono); font-size: 0.82rem; line-height: 1.5; margin-top: 8px; max-height: 200px; overflow-y: auto; overflow-x: auto; word-break: break-all;">
+                            <!-- Injected parameter limits -->
+                        </div>
+                    </div>
+
+                    <!-- Jeffreys Scale Card -->
+                    <div class="jeffreys-card" id="jeffreys-card" style="margin-top: 15px;">
+                        <div class="jeffreys-title">Evidence Strength</div>
+                        <div class="jeffreys-value" id="jeffreys-text">No Run Completed</div>
+                        <p class="jeffreys-description" id="jeffreys-desc">
+                            Run the sampler to compare the custom model's evidence with the baseline $\Lambda$CDM.
+                        </p>
+                        <div id="evidence-breakdown" style="display: none; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px; margin-top: 10px; font-family: var(--font-mono); font-size: 0.75rem; text-align: left; line-height: 1.4; color: #a4b0be; word-break: break-all;">
+                            <!-- Breakdown will be injected here -->
+                        </div>
+                    </div>
+
+                    <!-- Tension Statistical Formula & Component Detail -->
+                    <div class="evidence-math" style="margin-top: 15px; font-family: var(--font-sans); font-size: 0.82rem;">
+                        <div class="jeffreys-title" style="margin-bottom: 8px;">Tension Quantification Engine</div>
+                        <div style="text-align: center; margin: 10px 0; padding: 10px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.05); border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 0.88rem; color: #00d2d3;">
+                            Tension = |&mu;₁ - &mu;₂| / &radic;(&sigma;₁&sup2; + &sigma;₂&sup2;)
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 8px; font-size: 0.78rem;">
+                            <div style="border-bottom: 1px solid rgba(255,255,255,0.02); padding-bottom: 6px;">
+                                <div style="display: flex; justify-content: space-between; font-weight: bold; margin-bottom: 2px;">
+                                    <span>H₀ (Hubble Parameter):</span>
+                                    <span id="detail-h0-tension" class="highlight-cyan">-</span>
+                                </div>
+                                <div style="color: #a4b0be; display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.72rem;">
+                                    <span>Run: &mu; = <span id="val-h0-mean">-</span>, &sigma; = <span id="val-h0-std">-</span></span>
+                                    <span>SH0ES: &mu; = 73.04, &sigma; = 1.04</span>
+                                </div>
+                            </div>
+                            <div>
+                                <div style="display: flex; justify-content: space-between; font-weight: bold; margin-bottom: 2px;">
+                                    <span>S₈ (Structure Amplitude):</span>
+                                    <span id="detail-s8-tension" class="highlight-cyan">-</span>
+                                </div>
+                                <div style="color: #a4b0be; display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.72rem; margin-bottom: 2px;">
+                                    <span>Run: &mu; = <span id="val-s8-mean">-</span>, &sigma; = <span id="val-s8-std">-</span></span>
+                                    <span>DES: &mu; = 0.776, &sigma; = 0.017</span>
+                                </div>
+                                <div style="color: #a4b0be; display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.72rem;">
+                                    <span>KiDS: &mu; = 0.759, &sigma; = 0.024</span>
+                                    <span>Planck: &mu; = 0.832, &sigma; = 0.013</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Unified AI Copy Button -->
+                    <button class="btn btn-primary btn-glow" id="btn-copy-ai-prompt" style="margin-top: 15px; width: 100%; padding: 12px; font-size: 0.95rem; background: linear-gradient(135deg, #00d2d3, #3867d6); border: none; box-shadow: 0 4px 15px rgba(0, 210, 211, 0.3);">
+                        ✨ Copy AI Diagnostic Prompt
+                    </button>
                 </div>
 
-                <!-- Parameters Constraints Table -->
-                <div class="evidence-math" id="constraints-card" style="margin-top: 15px; display: none; position: relative;">
-                    <button class="copy-btn" id="btn-copy-constraints" title="Copy 1-sigma constraints" style="position: absolute; top: 10px; right: 10px; background: none; border: none; color: #a4b0be; cursor: pointer; font-size: 0.9rem; padding: 2px 6px; border-radius: 4px; transition: all 0.2s ease;">📋</button>
-                    <div class="jeffreys-title">1-Sigma Constraints (Mean &amp; 1-&sigma;)</div>
-                    <div id="constraints-body" style="font-family: var(--font-mono); font-size: 0.82rem; line-height: 1.5; margin-top: 8px; max-height: 200px; overflow-y: auto; overflow-x: auto; word-break: break-all;">
-                        <!-- Injected parameter limits -->
+                <!-- Tab 2: Cosmo Curves -->
+                <div class="tab-content" id="tab-curves">
+                    <div class="evidence-math">
+                        <div class="jeffreys-title" style="margin-bottom: 8px;">Effective Equation‑of‑State w(z)</div>
+                        <div class="chart-wrapper">
+                            <canvas id="chart-w-mu" style="background: rgba(0,0,0,0.2); border-radius: 4px; padding: 5px;"></canvas>
+                        </div>
+                        <div id="equation-of-state-params" style="display: flex; justify-content: space-between; font-size: 0.78rem; color: #a4b0be; font-family: var(--font-mono); margin-top: 8px; padding-top: 6px; border-top: 1px dashed rgba(255,255,255,0.05);">
+                            <span>w<sub>0</sub>: <span id="curve-w0" style="color: #fff;">-</span></span>
+                            <span>w<sub>a</sub>: <span id="curve-wa" style="color: #fff;">-</span></span>
+                        </div>
+                    </div>
+                    
+                    <div class="evidence-math" style="margin-top: 15px;">
+                        <div class="jeffreys-title" style="margin-bottom: 8px;">Structure Growth Rate f&sigma;<sub>8</sub>(z)</div>
+                        <div class="chart-wrapper">
+                            <canvas id="chart-f-sigma8" style="background: rgba(0,0,0,0.2); border-radius: 4px; padding: 5px;"></canvas>
+                        </div>
+                        <div id="structure-growth-params" style="display: flex; justify-content: space-between; font-size: 0.78rem; color: #a4b0be; font-family: var(--font-mono); margin-top: 8px; padding-top: 6px; border-top: 1px dashed rgba(255,255,255,0.05);">
+                            <span>Growth Index &gamma;<sub>0</sub>: <span id="curve-gamma" style="color: #fff;">-</span></span>
+                        </div>
+                    </div>
+
+                    <!-- Model Deformation Slider -->
+                    <div class="evidence-math" style="margin-top: 15px;">
+                        <div class="jeffreys-title" style="margin-bottom: 4px;">Model Deformation Interpolator</div>
+                        <p style="font-size: 0.72rem; color: #a4b0be; margin-bottom: 8px;">
+                            Deform model parameter space smoothly from standard &Lambda;CDM (0.0) to full PRTOE (1.0).
+                        </p>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                            <span style="font-size: 0.78rem; color: #fff;">Deformation (&alpha;):</span>
+                            <span id="val-deform-alpha" style="font-family: var(--font-mono); color: #00d2d3; font-weight: bold;">0.00</span>
+                        </div>
+                        <input type="range" id="slide-deform-alpha" min="0.0" max="1.0" step="0.05" value="0.00" style="width: 100%; height: 5px; accent-color: #00d2d3; background: rgba(255,255,255,0.1); border-radius: 3px;">
                     </div>
                 </div>
 
-                <!-- Jeffreys Scale Card -->
-                <div class="jeffreys-card" id="jeffreys-card">
-                    <div class="jeffreys-title">Evidence Strength</div>
-                    <div class="jeffreys-value" id="jeffreys-text">No Run Completed</div>
-                    <p class="jeffreys-description" id="jeffreys-desc">
-                        Run the sampler to compare the custom model's evidence with the baseline $\Lambda$CDM.
-                    </p>
-                    <div id="evidence-breakdown" style="display: none; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px; margin-top: 10px; font-family: var(--font-mono); font-size: 0.75rem; text-align: left; line-height: 1.4; color: #a4b0be; word-break: break-all;">
-                        <!-- Breakdown will be injected here -->
+                <!-- Tab 3: Influence Maps & Pull Analyzer -->
+                <div class="tab-content" id="tab-influence">
+                    <!-- Jacobian Influence Heatmap -->
+                    <div class="evidence-math">
+                        <div class="jeffreys-title" style="margin-bottom: 6px;">Parameter Influence Map (Jacobian Heatmap)</div>
+                        <p style="font-size: 0.72rem; color: #a4b0be; margin-bottom: 10px;">
+                            Normalized sensitivity matrix showing how late-time PRTOE parameters affect key cosmological parameters. Values show &part; ln(Observable) / &part; ln(Parameter).
+                        </p>
+                        <div id="jacobian-heatmap-container" style="overflow-x: auto; font-family: var(--font-mono); font-size: 0.78rem; text-align: left; background: rgba(0,0,0,0.2); border-radius: 4px; padding: 5px; border: 1px solid rgba(255,255,255,0.05);">
+                            <div style="color: #a4b0be; text-align: center; padding: 10px;">Calculate derivatives to populate map.</div>
+                        </div>
+                    </div>
+                    
+                    <!-- Dataset Pull Analyzer -->
+                    <div class="evidence-math" style="margin-top: 15px;">
+                        <div class="jeffreys-title" style="margin-bottom: 6px;">Dataset Pull Analyzer</div>
+                        <p style="font-size: 0.72rem; color: #a4b0be; margin-bottom: 10px;">
+                            Correlation matrix between parameters (H₀, S₈) and individual likelihood datasets from active chains. Indicates parameter pull directions.
+                        </p>
+                        <div id="dataset-pull-container" style="overflow-x: auto; font-family: var(--font-mono); font-size: 0.78rem; text-align: left; background: rgba(0,0,0,0.2); border-radius: 4px; padding: 5px; border: 1px solid rgba(255,255,255,0.05);">
+                            <div style="color: #a4b0be; text-align: center; padding: 10px;">Loading pull data from active chains...</div>
+                        </div>
+                    </div>
+
+                    <!-- Delta Chi2 Bar Chart -->
+                    <div class="evidence-math" style="margin-top: 15px;">
+                        <div class="jeffreys-title" style="margin-bottom: 8px;">Likelihood Pull: &Delta;&chi;&sup2; per Dataset</div>
+                        <div class="chart-wrapper-large">
+                            <canvas id="chart-influence" style="background: rgba(0,0,0,0.2); border-radius: 4px; padding: 5px;"></canvas>
+                        </div>
                     </div>
                 </div>
 
-                <!-- Unified AI Copy Button -->
-                <button class="btn btn-primary btn-glow" id="btn-copy-ai-prompt" style="margin-top: 15px; width: 100%; padding: 12px; font-size: 0.95rem; background: linear-gradient(135deg, #00d2d3, #3867d6); border: none; box-shadow: 0 4px 15px rgba(0, 210, 211, 0.3);">
-                    ✨ Copy AI Diagnostic Prompt
-                </button>
+                <!-- Tab 4: Run Health -->
+                <div class="tab-content" id="tab-health">
+                    <div class="evidence-math">
+                        <!-- Stagnation Alert & Recovery Control -->
+                        <div id="stagnation-banner" style="display: none; background: rgba(255, 71, 87, 0.15); border: 1px solid #ff4757; border-radius: 4px; padding: 12px; margin-bottom: 15px; font-family: var(--font-sans); font-size: 0.84rem;">
+                            <div style="display: flex; align-items: center; gap: 8px; color: #ff4757; font-weight: bold; margin-bottom: 4px;">
+                                <span>⚠️ SAMPLER STAGNATION DETECTED</span>
+                            </div>
+                            <p id="stagnation-reason-txt" style="color: #a4b0be; font-size: 0.78rem; margin: 0 0 10px 0; line-height: 1.3;">
+                                The sampler is evaluating proposals but fails to accept new states (ESS=0).
+                            </p>
+                            <div style="display: flex; gap: 10px;">
+                                <button class="btn btn-danger" id="btn-stagnation-recover" style="padding: 6px 12px; font-size: 0.8rem; flex: 1; border: none; font-weight: bold;">
+                                    Widen Priors &amp; Restart
+                                </button>
+                                <button class="btn btn-secondary" id="btn-stagnation-dismiss" style="padding: 6px 12px; font-size: 0.8rem;">
+                                    Dismiss
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="jeffreys-title" style="margin-bottom: 12px;">Diagnostics Monitor</div>
+                        
+                        <div class="health-bar-container">
+                            <div class="health-bar-label">
+                                <span>Sampler Efficiency (Acceptance Rate)</span>
+                                <span id="health-efficiency-val">0.0%</span>
+                            </div>
+                            <div class="health-bar">
+                                <div class="health-bar-fill" id="health-efficiency-fill" style="background: linear-gradient(90deg, #00d2d3, #3867d6);"></div>
+                            </div>
+                        </div>
+
+                        <div class="health-bar-container">
+                            <div class="health-bar-label">
+                                <span>CLASS Boltzmann Solver Stability</span>
+                                <span id="health-stability-val">100.0%</span>
+                            </div>
+                            <div class="health-bar">
+                                <div class="health-bar-fill" id="health-stability-fill" style="background: linear-gradient(90deg, #2ed573, #1e90ff);"></div>
+                            </div>
+                        </div>
+
+                        <div class="health-bar-container">
+                            <div class="health-bar-label">
+                                <span>Prior-Hit Frequency</span>
+                                <span id="health-prior-val">0.0%</span>
+                            </div>
+                            <div class="health-bar">
+                                <div class="health-bar-fill" id="health-prior-fill" style="background: linear-gradient(90deg, #feca57, #ff4757);"></div>
+                            </div>
+                        </div>
+
+                        <div style="font-family: var(--font-sans); font-size: 0.82rem; margin-top: 15px; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 10px;">
+                            <div style="display: flex; justify-content: space-between;">
+                                <span style="color: #a4b0be;">Effective Sample Size (ESS):</span>
+                                <span id="health-ess" style="color: #fff; font-family: var(--font-mono);">-</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between;">
+                                <span style="color: #a4b0be;">Autocorrelation Length:</span>
+                                <span id="health-autocorr" style="color: #fff; font-family: var(--font-mono);">-</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between;">
+                                <span style="color: #a4b0be;">Total Proposals Evaluated:</span>
+                                <span id="health-evals" style="color: #fff; font-family: var(--font-mono);">-</span>
+                            </div>
+                        </div>
+
+                        <!-- Manual recovery & packaging buttons -->
+                        <div style="border-top: 1px solid rgba(255,255,255,0.05); padding-top: 12px; margin-top: 15px; display: flex; gap: 10px;">
+                            <button class="btn" id="btn-manual-recover" style="flex: 1; padding: 8px; font-size: 0.8rem; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff;">
+                                🛠️ Widen Priors &amp; Proposals
+                            </button>
+                            <button class="btn btn-primary" id="btn-download-repro" style="flex: 1; padding: 8px; font-size: 0.8rem; background: #3867d6; border: none;">
+                                📦 Repro Packager
+                            </button>
+                        </div>
+
+                        <!-- Sampler Brain Matrix -->
+                        <div style="border-top: 1px solid rgba(255,255,255,0.05); padding-top: 12px; margin-top: 15px;">
+                            <div class="jeffreys-title" style="margin-bottom: 6px;">Sampler Brain (Covariance Matrix)</div>
+                            <p style="font-size: 0.72rem; color: #a4b0be; margin-bottom: 10px;">
+                                Correlation values between parameters in the proposal covariance matrix. Detects degeneracies.
+                            </p>
+                            <div id="sampler-brain-matrix" style="overflow-x: auto; font-family: var(--font-mono); font-size: 0.78rem; text-align: left; background: rgba(0,0,0,0.2); border-radius: 4px; padding: 6px; border: 1px solid rgba(255,255,255,0.05);">
+                                <div style="color: #a4b0be; text-align: center;">Loading covariance parameters...</div>
+                            </div>
+                        </div>
+
+                        <!-- Chain Quality Panel (R̂, ESS, Trace, Autocorrelation) -->
+                        <div style="border-top: 1px solid rgba(255,255,255,0.05); padding-top: 12px; margin-top: 15px;">
+                            <div class="jeffreys-title" style="margin-bottom: 6px;">MCMC &amp; PolyChord Chain Quality Panel</div>
+                            <p style="font-size: 0.72rem; color: #a4b0be; margin-bottom: 10px;">
+                                Gelman-Rubin convergence (&Rcirc; / PSRF) and per-parameter Effective Sample Size (ESS) calculated from active chains.
+                            </p>
+                            <div style="overflow-x: auto; margin-bottom: 12px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.05);">
+                                <table style="width: 100%; border-collapse: collapse; font-family: var(--font-sans); font-size: 0.76rem; text-align: left; background: rgba(0,0,0,0.2);">
+                                    <thead>
+                                        <tr style="border-bottom: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.02);">
+                                            <th style="padding: 6px;">Parameter</th>
+                                            <th style="padding: 6px;">Gelman-Rubin &Rcirc; / PSRF</th>
+                                            <th style="padding: 6px;">Per-Parameter ESS</th>
+                                            <th style="padding: 6px;">Convergence Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="chain-quality-table-body">
+                                        <tr><td colspan="4" style="padding: 10px; text-align: center; color: #a4b0be;">Loading chain quality diagnostics...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div style="margin-top: 10px; display: flex; gap: 10px; align-items: center; margin-bottom: 8px;">
+                                <label style="font-size: 0.76rem; color: #a4b0be; font-family: var(--font-sans);">Select Parameter for Plots:</label>
+                                <select id="select-quality-param" style="padding: 4px; border-radius: 4px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); color: #fff; font-size: 0.76rem;"></select>
+                            </div>
+                            <div style="display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap;">
+                                <div style="flex: 1; min-width: 220px;">
+                                    <div class="jeffreys-title" style="font-size: 0.76rem; margin-bottom: 4px;">Trace Plot (Parameter vs Iteration)</div>
+                                    <div class="chart-wrapper" style="height: 160px; max-height: 160px;">
+                                        <canvas id="chart-quality-trace" style="background: rgba(0,0,0,0.2); border-radius: 4px; padding: 5px;"></canvas>
+                                    </div>
+                                </div>
+                                <div style="flex: 1; min-width: 220px;">
+                                    <div class="jeffreys-title" style="font-size: 0.76rem; margin-bottom: 4px;">Autocorrelation Plot (r_k vs Lag)</div>
+                                    <div class="chart-wrapper" style="height: 160px; max-height: 160px;">
+                                        <canvas id="chart-quality-autocorr" style="background: rgba(0,0,0,0.2); border-radius: 4px; padding: 5px;"></canvas>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab 5: Utilities Suite -->
+                <div class="tab-content" id="tab-utils">
+                    <div class="evidence-math">
+                        <div class="jeffreys-title">CLASS Compilation Wizard</div>
+                        <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;">
+                            <div class="wizard-row">
+                                <label>Optim. Level</label>
+                                <select id="wizard-opt">
+                                    <option value="-O3">-O3 (Max Speed)</option>
+                                    <option value="-O2">-O2 (Balanced)</option>
+                                    <option value="-Ofast">-Ofast (Aggressive)</option>
+                                </select>
+                            </div>
+                            <div class="wizard-row" style="margin-top: 2px;">
+                                <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+                                    <label style="display: flex; align-items: center; gap: 5px;">
+                                        <input type="checkbox" id="wizard-native" checked style="width: 14px; height: 14px;"> -march=native
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 5px;">
+                                        <input type="checkbox" id="wizard-fastmath" checked style="width: 14px; height: 14px;"> -ffast-math
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 5px;">
+                                        <input type="checkbox" id="wizard-clean" checked style="width: 14px; height: 14px;"> make clean
+                                    </label>
+                                </div>
+                            </div>
+                            <button class="btn btn-glow" id="btn-wizard-compile" style="background: linear-gradient(135deg, #10ac84, #01a3a4); border: none; padding: 8px; font-size: 0.85rem; color:#fff; width: 100%;">Compile CLASS Engine</button>
+                            <div id="wizard-status-txt" style="font-size: 0.72rem; color: #a4b0be; text-align: center; margin-top: 2px; font-family: var(--font-mono);">Compiler Idle</div>
+                        </div>
+                    </div>
+
+                    <div class="evidence-math" style="margin-top: 15px;">
+                        <div class="jeffreys-title" style="margin-bottom: 6px;">Parameter Evolution History</div>
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <input type="range" id="evolution-slider" min="0" max="0" value="0" style="flex: 1; height: 6px; cursor: pointer; accent-color: #00d2d3;">
+                                <span id="evolution-frame-num" style="font-size: 0.75rem; font-family: var(--font-mono); color: #fff;">0 / 0</span>
+                            </div>
+                            <div style="display: flex; gap: 10px;">
+                                <button class="btn" id="btn-play-evolution" style="flex: 1; padding: 6px 10px; font-size: 0.8rem; background: #3867d6; color: #fff; border:none;">▶ Play</button>
+                                <button class="btn btn-secondary" id="btn-reset-history" style="flex: 1; padding: 6px 10px; font-size: 0.8rem;">Clear Cache</button>
+                            </div>
+                            <img id="evolution-frame-img" style="width: 100%; border-radius: 4px; display: none; border: 1px solid rgba(255,255,255,0.05);" alt="Evolution Frame">
+                        </div>
+                    </div>
+
+                    <div class="evidence-math" style="margin-top: 15px; display: flex; flex-direction: column; gap: 8px;">
+                        <button class="btn btn-primary" id="btn-download-notebook" style="background: #3867d6; border: none; padding: 10px; font-size: 0.85rem; width: 100%;">
+                            📓 Download MCMC Analysis Notebook
+                        </button>
+                        <button class="btn btn-glow" id="btn-export-figure" style="background: linear-gradient(135deg, #ff9ff3, #feca57); color: #000; border: none; padding: 10px; font-size: 0.85rem; font-weight: bold; width: 100%;">
+                            🖼️ Export Print-Ready Paper Figure
+                        </button>
+                    </div>
+
+                    <!-- evolution animated movie compile card -->
+                    <div class="evidence-math" style="margin-top: 15px;">
+                        <div class="jeffreys-title" style="margin-bottom: 6px;">Posterior Evolution Movie Compiler</div>
+                        <p style="font-size: 0.72rem; color: #a4b0be; margin-bottom: 10px;">
+                            Compile all captured evolution frames into a single high-quality animated GIF file for presentations.
+                        </p>
+                        <button class="btn btn-glow" id="btn-compile-gif" style="background: linear-gradient(135deg, #ff9ff3, #3867d6); color: white; border: none; padding: 8px; width: 100%; font-size: 0.82rem; font-weight: bold;">
+                            🎬 Compile and Download Evolution GIF
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Tab 10: Run Autopsy, Residuals Explorer & Replay -->
+                <div class="tab-content" id="tab-autopsy">
+                    <!-- Cosmic Residuals Explorer -->
+                    <div class="evidence-math">
+                        <div class="jeffreys-title" style="margin-bottom: 6px;">Cosmic Residuals Explorer</div>
+                        <p style="font-size: 0.72rem; color: #a4b0be; margin-bottom: 10px;">
+                            Residual pull comparisons (PRTOE vs standard &Lambda;CDM) for Supernovae (SN) and BAO datasets. Points show (PRTOE - &Lambda;CDM)/&Lambda;CDM with experimental error bands.
+                        </p>
+                        <div class="chart-wrapper">
+                            <canvas id="chart-residuals" style="background: rgba(0,0,0,0.2); border-radius: 4px; padding: 5px;"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- Sampler Run Autopsy Timeline -->
+                    <div class="evidence-math" style="margin-top: 15px;">
+                        <div class="jeffreys-title" style="margin-bottom: 8px;">Sampler Run Autopsy Timeline</div>
+                        <p style="font-size: 0.72rem; color: #a4b0be; margin-bottom: 10px;">
+                            Chronological history of the active run execution including initialization metrics, proposal adjustments, and solver fails.
+                        </p>
+                        <div id="autopsy-timeline" style="max-height: 200px; overflow-y: auto; background: rgba(0,0,0,0.3); border-radius: 4px; padding: 10px; border: 1px solid rgba(255,255,255,0.05); font-family: var(--font-mono); font-size: 0.78rem; display: flex; flex-direction: column; gap: 8px;">
+                            <div style="color: #a4b0be; text-align: center;">Run the sampler to collect autopsy events.</div>
+                        </div>
+                    </div>
+
+                    <!-- Archive & Replay Controls -->
+                    <div class="evidence-math" style="margin-top: 15px;">
+                        <div class="jeffreys-title" style="margin-bottom: 6px;">Timeline Archival &amp; Replay System</div>
+                        <p style="font-size: 0.72rem; color: #a4b0be; margin-bottom: 10px;">
+                            Safeguard the current model's output files by backing them up to a timestamped folder inside chains/, then execute a new run.
+                        </p>
+                        <div style="display: flex; gap: 10px;">
+                            <button class="btn btn-primary" id="btn-archive-run" style="flex: 1; padding: 10px; font-size: 0.85rem; background: #3867d6; border: none; font-weight: bold;">
+                                📦 Archive Current Run
+                            </button>
+                            <button class="btn btn-glow" id="btn-archive-replay" style="flex: 1; padding: 10px; font-size: 0.85rem; background: linear-gradient(135deg, #10ac84, #01a3a4); border: none; color: white; font-weight: bold;">
+                                🔄 Archive &amp; Replay Run
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab 6: Posterior Corner -->
+                <div class="tab-content" id="tab-corner">
+                    <div class="evidence-math">
+                        <div class="jeffreys-title" style="margin-bottom: 8px;">Posterior Corner Plot Engine</div>
+                        <div style="font-size: 0.82rem; color: #a4b0be; margin-bottom: 12px; font-family: var(--font-sans);">
+                            Select parameters to project on the 2D contour grid. Chain overlay connects successive steps.
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; font-family: var(--font-sans); font-size: 0.82rem;">
+                            <div style="color: #fff; font-weight: bold; margin-bottom: 4px;">Parameters to Include:</div>
+                            <div style="display: flex; flex-wrap: wrap; gap: 10px;">
+                                <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                                    <input type="checkbox" class="corner-param" value="H0" checked> H₀
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                                    <input type="checkbox" class="corner-param" value="omega_cdm" checked> &omega;<sub>cdm</sub>
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                                    <input type="checkbox" class="corner-param" value="delta_prtoe" checked> &delta;<sub>prtoe</sub>
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                                    <input type="checkbox" class="corner-param" value="xi_prtoe" checked> &xi;<sub>prtoe</sub>
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                                    <input type="checkbox" class="corner-param" value="zeta_prtoe" checked> &zeta;<sub>prtoe</sub>
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                                    <input type="checkbox" class="corner-param" value="S8" checked> S₈
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                                    <input type="checkbox" class="corner-param" value="sigma8"> &sigma;₈
+                                </label>
+                            </div>
+                            <div style="display: flex; gap: 15px; margin-top: 8px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
+                                <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                                    <input type="checkbox" id="corner-use-weights" checked> Use MCMC Weights
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                                    <input type="checkbox" id="corner-overlay-chain" checked> Overlay Chain Path
+                                </label>
+                            </div>
+                        </div>
+                        <button class="btn btn-glow" id="btn-generate-corner" style="background: linear-gradient(135deg, #00d2d3, #3867d6); color: white; border: none; padding: 10px; width: 100%; font-size: 0.88rem; font-weight: bold;">
+                            Generate Posterior Corner Plot
+                        </button>
+                        <div id="corner-plot-container" style="margin-top: 15px; display: none; text-align: center; border: 1px solid rgba(255,255,255,0.05); border-radius: 4px; overflow: hidden; padding: 5px; background: rgba(0,0,0,0.2);">
+                            <img id="corner-plot-img" style="max-width: 100%; border-radius: 4px;" alt="Posterior Corner Plot">
+                        </div>
+                    </div>
+                    <!-- Likelihood Terrain Explorer -->
+                    <div class="evidence-math" style="margin-top: 15px;">
+                        <div class="jeffreys-title" style="margin-bottom: 6px;">Likelihood Terrain Explorer</div>
+                        <p style="font-size: 0.72rem; color: #a4b0be; margin-bottom: 10px;">
+                            Select any two parameters to project the likelihood contours / scatter. Marker brightness denotes &chi;&sup2;.
+                        </p>
+                        <div style="display: flex; gap: 10px; margin-bottom: 10px; font-family: var(--font-sans); font-size: 0.8rem;">
+                            <div style="flex: 1;">
+                                <label>X-Axis Parameter</label>
+                                <select id="terrain-param-x" style="width: 100%; padding: 6px; border-radius: 4px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); color: #fff;"></select>
+                            </div>
+                            <div style="flex: 1;">
+                                <label>Y-Axis Parameter</label>
+                                <select id="terrain-param-y" style="width: 100%; padding: 6px; border-radius: 4px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); color: #fff;"></select>
+                            </div>
+                        </div>
+                        <div class="chart-wrapper" style="height: 220px; max-height: 220px;">
+                            <canvas id="chart-terrain" style="background: rgba(0,0,0,0.2); border-radius: 4px; padding: 5px;"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab 7: Model Comparison -->
+                <div class="tab-content" id="tab-compare">
+                    <div class="evidence-math">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <div class="jeffreys-title">Multi-Model Comparison Suite</div>
+                            <button class="btn" id="btn-refresh-compare" style="padding: 4px 8px; font-size: 0.75rem; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff;">🔄 Refresh</button>
+                        </div>
+                        <div style="overflow-x: auto; margin-bottom: 15px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.05);">
+                            <table style="width: 100%; border-collapse: collapse; font-family: var(--font-sans); font-size: 0.8rem; text-align: left; background: rgba(0,0,0,0.2);">
+                                <thead>
+                                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.02);">
+                                        <th style="padding: 8px;">Model Run</th>
+                                        <th style="padding: 8px;">&chi;&sup2;</th>
+                                        <th style="padding: 8px;">log(Evidence)</th>
+                                        <th style="padding: 8px;">H₀ Tension</th>
+                                        <th style="padding: 8px;">S₈ Tension</th>
+                                        <th style="padding: 8px;">w₀, w<sub>a</sub></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="compare-matrix-body">
+                                    <tr><td colspan="6" style="padding: 12px; text-align: center; color: #a4b0be;">Loading comparison matrix...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div style="border-top: 1px dashed rgba(255,255,255,0.05); padding-top: 10px;">
+                            <div class="jeffreys-title" style="margin-bottom: 8px;">Equation-of-State comparison (w(z))</div>
+                            <div class="chart-wrapper">
+                                <canvas id="chart-compare-w" style="background: rgba(0,0,0,0.2); border-radius: 4px; padding: 5px;"></canvas>
+                            </div>
+                        </div>
+                        <div style="margin-top: 15px;">
+                            <div class="jeffreys-title" style="margin-bottom: 8px;">Structure Growth Comparison (f&sigma;<sub>8</sub>(z))</div>
+                            <div class="chart-wrapper">
+                                <canvas id="chart-compare-fs8" style="background: rgba(0,0,0,0.2); border-radius: 4px; padding: 5px;"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab 8: Stability & Sensitivity -->
+                <div class="tab-content" id="tab-stability">
+                    <div class="evidence-math">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <div class="jeffreys-title">CLASS Stability Scanner</div>
+                            <button class="btn" id="btn-run-scanner" style="padding: 6px 12px; font-size: 0.8rem; background: linear-gradient(135deg, #10ac84, #01a3a4); color: white; border: none;">Scan Parameters</button>
+                        </div>
+                        <p style="font-size: 0.76rem; color: #a4b0be; margin-bottom: 10px;">
+                            Varies late-time PRTOE scaling parameters by &plusmn;10% and checks for CLASS integration singularities. Prevents sampler crashes.
+                        </p>
+                        <div id="stability-scan-results" style="max-height: 160px; overflow-y: auto; font-family: var(--font-mono); font-size: 0.75rem; border-radius: 4px; border: 1px solid rgba(255,255,255,0.05); padding: 6px; background: rgba(0,0,0,0.3); display: none;">
+                            <!-- Scan output -->
+                        </div>
+                        <div id="stability-scan-idle" style="text-align: center; padding: 15px; color: #a4b0be; font-size: 0.8rem; background: rgba(0,0,0,0.1); border-radius: 4px; border: 1px dashed rgba(255,255,255,0.05);">
+                            Click "Scan Parameters" to inspect numerical stability.
+                        </div>
+                    </div>
+
+                    <div class="evidence-math" style="margin-top: 15px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <div class="jeffreys-title">Parameter Sensitivity Analyzer</div>
+                            <button class="btn" id="btn-run-sensitivity" style="padding: 4px 8px; font-size: 0.75rem; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff;">🔄 Calculate Derivatives</button>
+                        </div>
+                        <p style="font-size: 0.76rem; color: #a4b0be; margin-bottom: 10px;">
+                            Computes numerical derivatives &part;H₀/&part;&theta; and &part;S₈/&part;&theta; around the reference point using central difference schemes.
+                        </p>
+                        <div class="chart-wrapper">
+                            <canvas id="chart-sensitivity" style="background: rgba(0,0,0,0.2); border-radius: 4px; padding: 5px;"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab 9: PRTOE Playground -->
+                <div class="tab-content" id="tab-playground">
+                    <div class="evidence-math">
+                        <div class="jeffreys-title" style="margin-bottom: 8px;">PRTOE Mechanism Visualizer</div>
+                        <p style="font-size: 0.76rem; color: #a4b0be; margin-bottom: 12px;">
+                            Interactively tune late-time parameters in real-time to visualize how dark energy expansion deviates from standard &Lambda;CDM.
+                        </p>
+                        <div style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px; font-family: var(--font-sans); font-size: 0.8rem;">
+                            <div>
+                                <div style="display: flex; justify-content: space-between; color: #fff; margin-bottom: 2px;">
+                                    <span>Coupling Strength (&delta;<sub>prtoe</sub>):</span>
+                                    <span id="val-slide-delta" style="font-family: var(--font-mono); color: #00d2d3;">0.20</span>
+                                </div>
+                                <input type="range" class="play-slider" id="slide-delta" min="0.0" max="1.0" step="0.05" value="0.20" style="width: 100%; height: 5px; accent-color: #00d2d3; background: rgba(255,255,255,0.1); border-radius: 3px;">
+                            </div>
+                            <div>
+                                <div style="display: flex; justify-content: space-between; color: #fff; margin-bottom: 2px;">
+                                    <span>Newtonian Modifier (&xi;<sub>prtoe</sub>):</span>
+                                    <span id="val-slide-xi" style="font-family: var(--font-mono); color: #00d2d3;">1e-7</span>
+                                </div>
+                                <input type="range" class="play-slider" id="slide-xi" min="0.0" max="0.5" step="0.05" value="0.0" style="width: 100%; height: 5px; accent-color: #00d2d3; background: rgba(255,255,255,0.1); border-radius: 3px;">
+                            </div>
+                            <div>
+                                <div style="display: flex; justify-content: space-between; color: #fff; margin-bottom: 2px;">
+                                    <span>Field Scaling (&zeta;<sub>prtoe</sub>):</span>
+                                    <span id="val-slide-zeta" style="font-family: var(--font-mono); color: #00d2d3;">0.10</span>
+                                </div>
+                                <input type="range" class="play-slider" id="slide-zeta" min="0.0" max="1.0" step="0.05" value="0.10" style="width: 100%; height: 5px; accent-color: #00d2d3; background: rgba(255,255,255,0.1); border-radius: 3px;">
+                            </div>
+                            <div>
+                                <div style="display: flex; justify-content: space-between; color: #fff; margin-bottom: 2px;">
+                                    <span>Coupling Decay (&beta;<sub>prtoe</sub>):</span>
+                                    <span id="val-slide-beta" style="font-family: var(--font-mono); color: #00d2d3;">1e-6</span>
+                                </div>
+                                <input type="range" class="play-slider" id="slide-beta" min="-8" max="-3" step="0.5" value="-6" style="width: 100%; height: 5px; accent-color: #00d2d3; background: rgba(255,255,255,0.1); border-radius: 3px;">
+                            </div>
+                        </div>
+                        <div style="border-top: 1px dashed rgba(255,255,255,0.05); padding-top: 10px;">
+                            <div class="jeffreys-title" style="margin-bottom: 8px; font-size: 0.8rem;">Expansion History Ratio H(z) / H<sub>&Lambda;CDM</sub>(z)</div>
+                            <div class="chart-wrapper">
+                                <canvas id="chart-playground-ratio" style="background: rgba(0,0,0,0.2); border-radius: 4px; padding: 5px;"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
 
             </section>
         </main>
