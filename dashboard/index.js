@@ -523,7 +523,8 @@ setupUploadZone(yamlZone, yamlInput, handleYamlUpload);
 
 function setupUploadZone(zone, input, handler) {
     if (!zone || !input) return;
-    zone.addEventListener('click', () => {
+    zone.addEventListener('click', (e) => {
+        if (e.target === input) return;
         input.value = ''; // Reset value to force 'change' event even for the same file
         input.click();
     });
@@ -2890,6 +2891,37 @@ async function refreshLikelihoodTerrain() {
         if (res.ok) {
             const data = await res.json();
             if (data.status === "success" && data.points) {
+                // Dynamically update dropdown parameters if backend provides them
+                if (data.parameters && data.parameters.length > 0) {
+                    const currentOpts = Array.from(xSelect.options).map(o => o.value);
+                    const differs = data.parameters.length !== currentOpts.length || !data.parameters.every((val, idx) => val === currentOpts[idx]);
+                    if (differs) {
+                        const currentX = xSelect.value;
+                        const currentY = ySelect.value;
+                        
+                        xSelect.innerHTML = '';
+                        ySelect.innerHTML = '';
+                        
+                        data.parameters.forEach(p => {
+                            const optX = document.createElement('option');
+                            optX.value = p;
+                            optX.textContent = p;
+                            xSelect.appendChild(optX);
+                            
+                            const optY = document.createElement('option');
+                            optY.value = p;
+                            optY.textContent = p;
+                            ySelect.appendChild(optY);
+                        });
+                        
+                        if (data.parameters.includes(currentX)) xSelect.value = currentX;
+                        else if (data.parameters.includes(p1)) xSelect.value = p1;
+                        
+                        if (data.parameters.includes(currentY)) ySelect.value = currentY;
+                        else if (data.parameters.includes(p2)) ySelect.value = p2;
+                    }
+                }
+                
                 const chi2s = data.points.map(pt => pt.chi2);
                 const minChi2 = Math.min(...chi2s);
                 const maxChi2 = Math.max(...chi2s);
@@ -2911,8 +2943,8 @@ async function refreshLikelihoodTerrain() {
                 chartTerrain.data.datasets[0].backgroundColor = scatterData.map(pt => pt.color);
                 chartTerrain.data.datasets[0].pointBackgroundColor = scatterData.map(pt => pt.color);
                 
-                chartTerrain.options.scales.x.title.text = p1;
-                chartTerrain.options.scales.y.title.text = p2;
+                chartTerrain.options.scales.x.title.text = xSelect.value || p1;
+                chartTerrain.options.scales.y.title.text = ySelect.value || p2;
                 chartTerrain.update();
             }
         }
