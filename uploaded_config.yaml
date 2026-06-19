@@ -1,0 +1,132 @@
+# ==============================================================================
+# POLYCHORD CONFIGURATION FOR PRTOE
+# ==============================================================================
+
+debug: True
+
+# Output prefix for PolyChord chains
+output: chains/prtoe_polychord
+
+# 1. Likelihoods (CMB, BAO, and Supernovae/SH0ES)
+likelihood:
+  planck_2018_lowl.TT: null
+  planck_2018_lowl.EE: null
+  planck_2018_highl_plik.TTTEEE_lite: null
+  planck_2018_lensing.clik: null
+  bao.sixdf_2011_bao: null
+  bao.sdss_dr7_mgs: null
+  bao.sdss_dr12_consensus_final: null
+  bao.desi_2024_bao_all: null
+  sn.pantheonplusshoes: null
+
+# 2. Theory Provider (Custom CLASS Wrapper with Fast-Precision Settings)
+theory:
+  classy:
+    path: "/mnt/c/Users/themi/projects/prtoe_class"
+    stop_at_error: False
+    extra_args:
+      use_prtoe: 'yes'
+      gauge: newtonian
+      hyper_flat_approximation_nu: 7000.
+      transfer_neglect_delta_k_S_t0: 0.17
+      transfer_neglect_delta_k_S_t1: 0.05
+      transfer_neglect_delta_k_S_t2: 0.17
+      transfer_neglect_delta_k_S_e: 0.13
+      delta_l_max: 1000
+      # --- Massive Neutrino Physics ---
+      N_ur: 2.0328
+      N_ncdm: 1
+      T_ncdm: 0.71611
+
+# 3. Parameter Dictionary (Priors and Constraints)
+params:
+  omega_b:
+    prior: {min: 0.020, max: 0.025}
+    ref: 0.0224
+    proposal: 0.0001
+    latex: \Omega_\mathrm{b} h^2
+  omega_cdm:
+    prior: {min: 0.110, max: 0.130}
+    ref: 0.120
+    proposal: 0.001
+    latex: \Omega_\mathrm{c} h^2
+  H0:
+    prior: {min: 62.0, max: 80.0}
+    ref: 67.4
+    proposal: 0.5
+    latex: H_0
+  logA:
+    prior: {min: 2.90, max: 3.25}
+    ref: 3.05
+    proposal: 0.005
+    latex: \ln(10^{10} A_\mathrm{s})
+    drop: true
+  A_s:
+    value: 'lambda logA: 1e-10 * np.exp(logA)'
+  n_s:
+    prior: {min: 0.90, max: 1.09}
+    ref: 0.965
+    proposal: 0.004
+    latex: n_\mathrm{s}
+  z_reio:
+    prior: {min: 5.0, max: 12.0}
+    ref: 8.0
+    proposal: 0.1
+    latex: z_\mathrm{reio}
+  m_ncdm:
+    prior: {min: 0.00, max: 0.50}
+    ref: 0.06
+    proposal: 0.02
+    latex: \sum m_\nu \ [\mathrm{eV}]
+  A_planck:
+    prior: {dist: norm, loc: 1.0, scale: 0.0025}
+    ref: 1.0
+    proposal: 0.00025
+    latex: A_\mathrm{planck}
+  lambda_prtoe:
+    value: 0.05
+  m_prtoe:
+    value: 0.05
+  delta_prtoe:
+    prior: {min: 0.0005, max: 0.35}
+    ref: {dist: norm, loc: 0.05, scale: 0.1}
+    proposal: 0.05
+    latex: \Delta
+  xi_prtoe:
+    prior: {min: 5.0e-8, max: 5.0e-7}
+    ref: {dist: norm, loc: 2.5e-7, scale: 1.0e-6}
+    proposal: 5.0e-8
+    latex: \xi
+  log_beta_prtoe:
+    prior: {min: -14.0, max: -1.0}
+    ref: -6.0
+    proposal: 0.2
+    latex: \log_{10}(\beta_\mathrm{prtoe})
+    drop: true
+  beta_prtoe:
+    value: 'lambda log_beta_prtoe: 10**log_beta_prtoe'
+    latex: \beta_\mathrm{prtoe}
+  V0_prtoe:
+    value: 'lambda omega_b, omega_cdm, H0: 1.0 - (omega_b + omega_cdm) / (H0/100.0)**2'
+    latex: V_{0,\mathrm{prtoe}}
+  zeta_prtoe:
+    prior: {min: 0.01, max: 0.35}
+    ref: 0.15
+    proposal: 0.02
+    latex: \zeta_\mathrm{prtoe}
+
+  # --- Derived parameters to track in the chains ---
+  sigma8:
+    latex: \sigma_8
+  Omega_m:
+    latex: \Omega_\mathrm{m}
+  S8:
+    derived: 'lambda sigma8, Omega_m: sigma8 * (Omega_m / 0.3)**0.5'
+    latex: S_8
+
+# 4. Sampler Configuration (PolyChord)
+sampler:
+  polychord:
+    nlive: 200          # Optimized live points to save 20% runtime
+    num_repeats: 5      # Explicitly set to 5 as requested
+    precision_criterion: 0.01  # Replaces 'tolerance'
