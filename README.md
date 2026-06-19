@@ -44,6 +44,16 @@ docker run --rm -p 8000:8000 -v $(pwd)/chains:/app/chains cosmic-dashboard
 ```
 Then manually open `dashboard/index.html` in any browser.
 
+### 📱 Monitoring Runs Remotely on Your Phone (On-The-Go)
+Since CosmicDashboard is built with responsive web layouts, you can securely monitor and interact with your active runs (start, stop, or tweak priors via the Watchdog alerts) directly from your phone's browser:
+
+1. **Start the Dashboard:** Run the app locally on port 8000 using the launch scripts or docker commands.
+2. **Create a Secure Tunnel:** Open a new terminal on your host machine and run:
+   ```bash
+   npx localtunnel --port 8000
+   ```
+3. **Open the Link:** It will output a private public URL (e.g., `https://cosmic-run-x.loca.lt`). Open this link in your phone's browser (Safari, Chrome, etc.) to view and control your run from anywhere in the world!
+
 ### Advanced Academic & Diagnostic Features:
 
 * **Interactive Modified Gravity Playground & Background Solver Emulator:**
