@@ -91,8 +91,10 @@ const watchdogIcon = document.getElementById('watchdog-icon');
 const inputCores = document.getElementById('input-cores');
 const checkAutoRebuild = document.getElementById('check-autorebuild');
 const checkAutoRunLcdm = document.getElementById('check-autorun-lcdm');
+const checkAutoRunCustom = document.getElementById('check-autorun-custom');
 
 let currentProposedUpdates = {};
+let isAutoRunning = false; // Flag to track and prevent duplicate auto-run triggers
 let watchdogIgnored = false; // Flag to temporarily ignore watchdog
 let lastRunStartTime = null; // Track run start time to persist ignore state across refreshes
 let lastWatchdogAlertCount = 0; // Track watchdog alert count for audio alerts
@@ -249,11 +251,27 @@ document.addEventListener('DOMContentLoaded', () => {
     // Stagnation Recover & Manual Recover Buttons
     const btnStagRecover = document.getElementById('btn-stagnation-recover');
     if (btnStagRecover) {
-        btnStagRecover.addEventListener('click', () => handleSamplerRecovery(0.20, 2.0));
+        btnStagRecover.addEventListener('click', () => {
+            showConfirmationModal(
+                "Widen Priors & Proposals",
+                "Are you sure you want to widen the parameter priors and proposal range? This will stop the active run and restart it using the Watchdog's recommendations.",
+                "Widen & Restart",
+                "Cancel",
+                () => handleSamplerRecovery(0.20, 2.0)
+            );
+        });
     }
     const btnManualRecover = document.getElementById('btn-manual-recover');
     if (btnManualRecover) {
-        btnManualRecover.addEventListener('click', () => handleSamplerRecovery(0.20, 2.0));
+        btnManualRecover.addEventListener('click', () => {
+            showConfirmationModal(
+                "Widen Priors & Proposals",
+                "Are you sure you want to widen the parameter priors and proposal range? This will stop the active run and restart it using the Watchdog's recommendations.",
+                "Widen & Restart",
+                "Cancel",
+                () => handleSamplerRecovery(0.20, 2.0)
+            );
+        });
     }
 
     // Dismiss Stagnation Banner Button
@@ -268,7 +286,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnDownloadRepro = document.getElementById('btn-download-repro');
     if (btnDownloadRepro) {
         btnDownloadRepro.addEventListener('click', () => {
-            window.location.href = `${API_URL}/api/download_reproducibility_pack?config_name=${encodeURIComponent(activeConfig)}`;
+            showConfirmationModal(
+                "Package & Download",
+                "Generate and download the journal submission reproducibility pack? This compiles the configuration, chains, best-fit stats, and plots into a single ZIP.",
+                "Generate Pack",
+                "Cancel",
+                () => {
+                    window.location.href = `${API_URL}/api/download_reproducibility_pack?config_name=${encodeURIComponent(activeConfig)}`;
+                }
+            );
         });
     }
 
@@ -523,6 +549,13 @@ function switchToLcdm() {
     appendLog(`Reverted to default ΛCDM configuration: lcdm_config.yaml`);
 }
 
+function switchToCustom() {
+    activeConfig = 'uploaded_config.yaml';
+    yamlName.textContent = 'Custom: uploaded_config.yaml';
+    yamlName.classList.add('active');
+    appendLog(`Switched to custom configuration: uploaded_config.yaml`);
+}
+
 // Reset to ΛCDM
 btnResetYaml.addEventListener('click', (e) => {
     e.preventDefault();
@@ -607,10 +640,19 @@ async function handleYamlUpload(file) {
 }
 
 // Start Run
-btnStart.addEventListener('click', () => triggerRun(true));
+btnStart.addEventListener('click', () => {
+    showConfirmationModal(
+        "Start New Run",
+        "Are you sure you want to start a new cosmological run? This will terminate any active process group and overwrite previous sampling data.",
+        "Yes, Start Run",
+        "Cancel",
+        () => triggerRun(true)
+    );
+});
 btnResume.addEventListener('click', () => triggerRun(false));
 
 async function triggerRun(forceOverwrite) {
+    isAutoRunning = false;
     btnStart.disabled = true;
     btnResume.disabled = true;
     const cores = inputCores ? (parseInt(inputCores.value) || 24) : 24;
@@ -639,6 +681,7 @@ async function triggerRun(forceOverwrite) {
         const data = await response.json();
         if (response.ok) {
             appendLog(`Process started in background. PID: ${data.pid}`);
+            localStorage.removeItem('intergalacticPlayed');
             if (autoRebuild) fetchSysInfo(); // Update engine badge
             checkStatus();
         } else {
@@ -784,6 +827,20 @@ async function checkStatus() {
         
         // Update status indicator
         updateStatusIndicator(data.status);
+        
+        const labelCustomModel = document.getElementById('label-custom-model');
+        const activeYamlPathLower = (data.active_yaml_path || '').toLowerCase();
+        const activePrefixLower = (data.active_output_prefix || '').toLowerCase();
+        const activeConfigLower = (activeConfig || '').toLowerCase();
+        const yamlNameLower = (yamlName ? yamlName.textContent : '').toLowerCase();
+        const isLcdm = activeYamlPathLower.includes('lcdm') ||
+                       activePrefixLower.includes('lcdm') ||
+                       activeConfigLower.includes('lcdm') ||
+                       yamlNameLower.includes('lcdm') ||
+                       yamlNameLower.includes('baseline');
+        if (labelCustomModel) {
+            labelCustomModel.innerHTML = isLcdm ? '&Lambda;CDM log(Z<sub>lcdm</sub>):' : 'Custom Model log(Z<sub>custom</sub>):';
+        }
         
         // Update stats
         statDead.textContent = data.dead_points;
@@ -1019,6 +1076,7 @@ async function checkStatus() {
         
         // Handle actions availability
         if (data.status === 'running') {
+            isAutoRunning = false;
             btnStart.disabled = true;
             btnResume.disabled = true;
             btnStop.disabled = false;
@@ -1198,19 +1256,40 @@ async function checkStatus() {
 
         // If completed, compute evidence comparison
         if (data.status === 'completed' && data.log_evidence !== null) {
-            if (activeConfig === 'lcdm_config.yaml') {
+            const activeYamlPathLower = (data.active_yaml_path || '').toLowerCase();
+            const activePrefixLower = (data.active_output_prefix || '').toLowerCase();
+            const activeConfigLower = (activeConfig || '').toLowerCase();
+            const yamlNameLower = (yamlName ? yamlName.textContent : '').toLowerCase();
+            const isLcdmRun = activeYamlPathLower.includes('lcdm') ||
+                              activePrefixLower.includes('lcdm') ||
+                              activeConfigLower.includes('lcdm') ||
+                              yamlNameLower.includes('lcdm') ||
+                              yamlNameLower.includes('baseline');
+            if (isLcdmRun) {
                 updateBaseline("planck_bao_pantheonplus_shoes", data.log_evidence, data.best_chi2);
+                if (checkAutoRunCustom && checkAutoRunCustom.checked && !isAutoRunning) {
+                    isAutoRunning = true;
+                    appendLog(`[PIPELINE] Baseline ΛCDM completed. Preparing to auto-run custom model in 5 seconds...`);
+                    setTimeout(() => {
+                        switchToCustom();
+                        triggerRun(true);
+                    }, 5000);
+                }
             } else {
                 calculateEvidence(data.log_evidence);
-                if (checkAutoRunLcdm && checkAutoRunLcdm.checked) {
+                if (checkAutoRunLcdm && checkAutoRunLcdm.checked && !isAutoRunning) {
+                    isAutoRunning = true;
                     appendLog(`[PIPELINE] Custom model completed. Preparing to auto-run baseline ΛCDM in 5 seconds...`);
                     setTimeout(() => {
                         switchToLcdm();
-                        btnStart.click();
+                        triggerRun(true);
                     }, 5000);
                 }
             }
         }
+        
+        // Check if both runs completed and evidence criteria is met to play Beastie Boys: Intergalactic
+        checkIntergalacticTrigger();
         
     } catch (err) {
         console.error('Status check error:', err);
@@ -2719,24 +2798,32 @@ async function pollRebuildStatus() {
 }
 
 async function handleResetHistory() {
-    const btn = document.getElementById('btn-reset-history');
-    btn.disabled = true;
-    try {
-        const response = await fetch(`${API_URL}/api/reset_history`, { method: 'POST' });
-        if (response.ok) {
-            appendLog(`[PIPELINE] Plot frames history cache cleared.`);
-            const slider = document.getElementById('evolution-slider');
-            const frameNum = document.getElementById('evolution-frame-num');
-            const frameImg = document.getElementById('evolution-frame-img');
-            if (slider) { slider.min = 0; slider.max = 0; slider.value = 0; }
-            if (frameNum) frameNum.innerText = "0 / 0";
-            if (frameImg) { frameImg.style.display = 'none'; frameImg.src = ''; }
+    showConfirmationModal(
+        "Clear History Cache",
+        "Are you sure you want to clear the plot frames history cache? This will delete all collected movie frames.",
+        "Yes, Clear Cache",
+        "Cancel",
+        async () => {
+            const btn = document.getElementById('btn-reset-history');
+            if (btn) btn.disabled = true;
+            try {
+                const response = await fetch(`${API_URL}/api/reset_history`, { method: 'POST' });
+                if (response.ok) {
+                    appendLog(`[PIPELINE] Plot frames history cache cleared.`);
+                    const slider = document.getElementById('evolution-slider');
+                    const frameNum = document.getElementById('evolution-frame-num');
+                    const frameImg = document.getElementById('evolution-frame-img');
+                    if (slider) { slider.min = 0; slider.max = 0; slider.value = 0; }
+                    if (frameNum) frameNum.innerText = "0 / 0";
+                    if (frameImg) { frameImg.style.display = 'none'; frameImg.src = ''; }
+                }
+            } catch (err) {
+                console.error("Error resetting history:", err);
+            } finally {
+                if (btn) btn.disabled = false;
+            }
         }
-    } catch (err) {
-        console.error("Error resetting history:", err);
-    } finally {
-        btn.disabled = false;
-    }
+    );
 }
 
 async function handleExportFigure() {
@@ -3497,14 +3584,15 @@ async function populateRunsLists() {
                 runB.innerHTML = '';
 
                 data.runs.forEach(r => {
+                    const displayName = r === 'lcdm_polychord' ? 'ΛCDM Baseline' : r.replace(/_/g, ' ').replace('polychord', 'PolyChord').replace('mcmc', 'MCMC');
                     const optA = document.createElement('option');
                     optA.value = r;
-                    optA.textContent = r;
+                    optA.textContent = displayName;
                     runA.appendChild(optA);
 
                     const optB = document.createElement('option');
                     optB.value = r;
-                    optB.textContent = r;
+                    optB.textContent = displayName;
                     runB.appendChild(optB);
                 });
 
@@ -3813,8 +3901,47 @@ async function refreshErrorLog() {
                     errorBody.style.color = '#2ecc71';
                     return;
                 }
-                errorBody.innerHTML = data.errors.join('\n');
+                
+                // Render each error with an acknowledge button
+                errorBody.innerHTML = '';
                 errorBody.style.color = '#ff6b6b';
+                
+                data.errors.forEach(err => {
+                    const item = document.createElement('div');
+                    item.className = 'error-item';
+                    item.style.display = 'flex';
+                    item.style.justifyContent = 'space-between';
+                    item.style.alignItems = 'flex-start';
+                    item.style.padding = '6px 8px';
+                    item.style.marginBottom = '6px';
+                    item.style.background = 'rgba(255, 107, 107, 0.04)';
+                    item.style.borderLeft = '3px solid #ff4757';
+                    item.style.borderRadius = '4px';
+                    
+                    const textSpan = document.createElement('span');
+                    textSpan.style.flex = '1';
+                    textSpan.style.marginRight = '8px';
+                    textSpan.innerText = err.text;
+                    
+                    const ackBtn = document.createElement('button');
+                    ackBtn.innerHTML = '✕';
+                    ackBtn.title = 'Acknowledge & Remove';
+                    ackBtn.style.background = 'none';
+                    ackBtn.style.border = 'none';
+                    ackBtn.style.color = '#ff4757';
+                    ackBtn.style.cursor = 'pointer';
+                    ackBtn.style.fontSize = '0.85rem';
+                    ackBtn.style.fontWeight = 'bold';
+                    ackBtn.style.padding = '0 4px';
+                    
+                    ackBtn.addEventListener('click', () => {
+                        acknowledgeError(err.index);
+                    });
+                    
+                    item.appendChild(textSpan);
+                    item.appendChild(ackBtn);
+                    errorBody.appendChild(item);
+                });
             }
         }
     } catch (err) {
@@ -3822,19 +3949,113 @@ async function refreshErrorLog() {
     }
 }
 
-async function clearErrorLog() {
-    if (!confirm("Are you sure you want to clear the error logs?")) return;
+async function acknowledgeError(index) {
     try {
-        const response = await fetch(`${API_URL}/api/clear_dashboard_errors`, {
-            method: 'POST'
+        const response = await fetch(`${API_URL}/api/acknowledge_error`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ error_index: index })
         });
         if (response.ok) {
-            appendLog(`[ERRORS] Error log cleared successfully.`);
+            appendLog(`[ERRORS] Error acknowledged.`);
             refreshErrorLog();
         }
     } catch (err) {
-        console.error("Error clearing error logs:", err);
+        console.error("Error acknowledging error:", err);
     }
+}
+
+async function clearErrorLog() {
+    showConfirmationModal(
+        "Clear Error Log",
+        "Are you sure you want to clear the entire error log? This action cannot be undone.",
+        "Clear Log",
+        "Cancel",
+        async () => {
+            try {
+                const response = await fetch(`${API_URL}/api/clear_dashboard_errors`, {
+                    method: 'POST'
+                });
+                if (response.ok) {
+                    appendLog(`[ERRORS] Error log cleared successfully.`);
+                    refreshErrorLog();
+                }
+            } catch (err) {
+                console.error("Error clearing error logs:", err);
+            }
+        }
+    );
+}
+
+function showConfirmationModal(title, message, confirmText, cancelText, onConfirm) {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    
+    const box = document.createElement('div');
+    box.className = 'modal-box';
+    
+    const titleEl = document.createElement('div');
+    titleEl.className = 'modal-title';
+    titleEl.innerHTML = `⚠️ ${title}`;
+    
+    const bodyEl = document.createElement('div');
+    bodyEl.className = 'modal-body';
+    bodyEl.style.color = '#a4b0be';
+    bodyEl.style.fontSize = '0.95rem';
+    bodyEl.style.lineHeight = '1.5';
+    bodyEl.style.textAlign = 'center';
+    bodyEl.innerText = message;
+    
+    const buttonsEl = document.createElement('div');
+    buttonsEl.className = 'modal-buttons';
+    buttonsEl.style.display = 'flex';
+    buttonsEl.style.gap = '10px';
+    buttonsEl.style.justifyContent = 'center';
+    buttonsEl.style.marginTop = '10px';
+    
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn modal-btn-cancel';
+    cancelBtn.innerText = cancelText || 'Cancel';
+    cancelBtn.style.flex = '1';
+    
+    const confirmBtn = document.createElement('button');
+    confirmBtn.className = 'btn modal-btn-confirm';
+    confirmBtn.innerText = confirmText || 'Confirm';
+    confirmBtn.style.flex = '1';
+    confirmBtn.style.background = 'linear-gradient(135deg, #ff4757, #ff6b81)';
+    confirmBtn.style.border = 'none';
+    confirmBtn.style.color = '#fff';
+    confirmBtn.style.fontWeight = 'bold';
+    
+    buttonsEl.appendChild(cancelBtn);
+    buttonsEl.appendChild(confirmBtn);
+    
+    box.appendChild(titleEl);
+    box.appendChild(bodyEl);
+    box.appendChild(buttonsEl);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    
+    setTimeout(() => {
+        overlay.classList.add('active');
+    }, 10);
+    
+    const closeModal = () => {
+        overlay.classList.remove('active');
+        setTimeout(() => {
+            overlay.remove();
+        }, 300);
+    };
+    
+    cancelBtn.addEventListener('click', closeModal);
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) closeModal();
+    });
+    
+    confirmBtn.addEventListener('click', () => {
+        closeModal();
+        onConfirm();
+    });
 }
 
 // Show first-time researcher request popup for PRTOE model
@@ -3904,3 +4125,94 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 });
+
+let intergalacticPlaying = false;
+
+async function checkIntergalacticTrigger() {
+    // Only check if we haven't played it yet
+    if (localStorage.getItem('intergalacticPlayed') === 'true' || intergalacticPlaying) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_URL}/api/compare_models`);
+        if (!response.ok) return;
+        const data = await response.json();
+        if (data && data.models) {
+            const lcdm = data.models.find(m => m.prefix === 'lcdm_polychord');
+            const prtoe = data.models.find(m => m.prefix === 'prtoe_polychord');
+            
+            // Check if both have completed (logz is not null and is a valid number)
+            if (lcdm && prtoe && lcdm.logz !== null && prtoe.logz !== null) {
+                const logz_lcdm = parseFloat(lcdm.logz);
+                const logz_prtoe = parseFloat(prtoe.logz);
+                const delta_logz = logz_prtoe - logz_lcdm;
+                
+                if (delta_logz >= 5.0) {
+                    intergalacticPlaying = true;
+                    localStorage.setItem('intergalacticPlayed', 'true');
+                    appendLog("<span style='color: #ff9ff3; font-weight: bold;'>🌌 [CELEBRATION] PRTOE has strong evidence (ΔlogZ = " + delta_logz.toFixed(2) + " >= 5)! Playing Beastie Boys: Intergalactic! 🚀</span>");
+                    playIntergalacticSynth();
+                }
+            }
+        }
+    } catch (err) {
+        console.error("Error checking intergalactic trigger:", err);
+    }
+}
+
+function playIntergalacticSynth() {
+    // 1. Vocoder Voice synthesis: "Intergalactic, planetary, planetary, intergalactic"
+    if ('speechSynthesis' in window) {
+        const u = new SpeechSynthesisUtterance("Intergalactic, planetary, planetary, intergalactic.");
+        u.pitch = 0.5; // low pitch vocoder feel
+        u.rate = 0.82; // slightly slower
+        window.speechSynthesis.speak(u);
+    }
+    
+    // 2. Space synth slides using Web Audio API (iconic intro)
+    try {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContext) return;
+        const ctx = new AudioContext();
+        const now = ctx.currentTime;
+        
+        const playSynthSlide = (startTime, duration, startFreq, endFreq) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            const filter = ctx.createBiquadFilter();
+            
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(startFreq, startTime);
+            osc.frequency.exponentialRampToValueAtTime(endFreq, startTime + duration);
+            
+            filter.type = 'bandpass';
+            filter.frequency.setValueAtTime(startFreq * 1.4, startTime);
+            filter.frequency.exponentialRampToValueAtTime(endFreq * 1.4, startTime + duration);
+            
+            gain.gain.setValueAtTime(0.12, startTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+            
+            osc.connect(filter);
+            filter.connect(gain);
+            gain.connect(ctx.destination);
+            
+            osc.start(startTime);
+            osc.stop(startTime + duration);
+        };
+        
+        // Program the sliding planetary pitches
+        playSynthSlide(now, 0.9, 160, 480);
+        playSynthSlide(now + 0.9, 0.9, 480, 220);
+        playSynthSlide(now + 1.8, 0.9, 220, 640);
+        playSynthSlide(now + 2.7, 1.4, 640, 110);
+        
+        setTimeout(() => {
+            intergalacticPlaying = false;
+        }, 5000);
+        
+    } catch (e) {
+        console.error("Web Audio fail:", e);
+        intergalacticPlaying = false;
+    }
+}

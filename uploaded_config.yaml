@@ -1,11 +1,10 @@
 # ==============================================================================
-# POLYCHORD CONFIGURATION FOR PRTOE
+# POLYCHORD CONFIGURATION FOR BASELINE LCDM
 # ==============================================================================
 
 debug: True
 
-# Output prefix for PolyChord chains
-output: chains/prtoe_polychord
+output: chains/lcdm_polychord
 
 # 1. Likelihoods (CMB, BAO, and Supernovae/SH0ES)
 likelihood:
@@ -19,13 +18,13 @@ likelihood:
   bao.desi_2024_bao_all: null
   sn.pantheonplusshoes: null
 
-# 2. Theory Provider (Custom CLASS Wrapper with Fast-Precision Settings)
+# 2. Theory Provider (CLASS Engine with matching Fast-Precision Settings)
 theory:
   classy:
-    path: "/mnt/c/Users/themi/projects/prtoe_class"
+    path: "/home/themilkmanj/prtoe_class"
     stop_at_error: False
     extra_args:
-      use_prtoe: 'yes'
+      use_prtoe: 'no'
       gauge: newtonian
       hyper_flat_approximation_nu: 7000.
       transfer_neglect_delta_k_S_t0: 0.17
@@ -38,7 +37,7 @@ theory:
       N_ncdm: 1
       T_ncdm: 0.71611
 
-# 3. Parameter Dictionary (Priors and Constraints)
+# 3. Parameter Dictionary (Matching Prior Volumes of PRTOE)
 params:
   omega_b:
     prior: {min: 0.020, max: 0.025}
@@ -83,37 +82,6 @@ params:
     ref: 1.0
     proposal: 0.00025
     latex: A_\mathrm{planck}
-  lambda_prtoe:
-    value: 0.05
-  m_prtoe:
-    value: 0.05
-  delta_prtoe:
-    prior: {min: 0.0005, max: 0.35}
-    ref: {dist: norm, loc: 0.05, scale: 0.1}
-    proposal: 0.05
-    latex: \Delta
-  xi_prtoe:
-    prior: {min: 5.0e-8, max: 5.0e-7}
-    ref: {dist: norm, loc: 2.5e-7, scale: 1.0e-6}
-    proposal: 5.0e-8
-    latex: \xi
-  log_beta_prtoe:
-    prior: {min: -14.0, max: -1.0}
-    ref: -6.0
-    proposal: 0.2
-    latex: \log_{10}(\beta_\mathrm{prtoe})
-    drop: true
-  beta_prtoe:
-    value: 'lambda log_beta_prtoe: 10**log_beta_prtoe'
-    latex: \beta_\mathrm{prtoe}
-  V0_prtoe:
-    value: 'lambda omega_b, omega_cdm, H0: 1.0 - (omega_b + omega_cdm) / (H0/100.0)**2'
-    latex: V_{0,\mathrm{prtoe}}
-  zeta_prtoe:
-    prior: {min: 0.01, max: 0.35}
-    ref: 0.15
-    proposal: 0.02
-    latex: \zeta_\mathrm{prtoe}
 
   # --- Derived parameters to track in the chains ---
   sigma8:
@@ -124,9 +92,9 @@ params:
     derived: 'lambda sigma8, Omega_m: sigma8 * (Omega_m / 0.3)**0.5'
     latex: S_8
 
-# 4. Sampler Configuration (PolyChord)
+# 4. Sampler Configuration (Matching PolyChord Settings)
 sampler:
   polychord:
-    nlive: 200          # Optimized live points to save 20% runtime
-    num_repeats: 5      # Explicitly set to 5 as requested
-    precision_criterion: 0.01  # Replaces 'tolerance'
+    nlive: 200          # Matching live points
+    num_repeats: 5      # Matching repeats
+    precision_criterion: 0.01  # Matching precision

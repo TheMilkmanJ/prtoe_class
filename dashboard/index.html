@@ -167,6 +167,10 @@
                             <input type="checkbox" id="check-autorun-lcdm" style="width: 18px; height: 18px;">
                             <label style="margin: 0; cursor: pointer; color: #a4b0be; font-size: 0.9rem;" for="check-autorun-lcdm">Auto-run default &Lambda;CDM baseline after</label>
                         </div>
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <input type="checkbox" id="check-autorun-custom" style="width: 18px; height: 18px;">
+                            <label style="margin: 0; cursor: pointer; color: #a4b0be; font-size: 0.9rem;" for="check-autorun-custom">Auto-run custom model after &Lambda;CDM finishes</label>
+                        </div>
                     </div>
                 </div>
 
@@ -338,11 +342,11 @@
                     <div class="evidence-math" style="position: relative;">
                         <button class="copy-btn" id="btn-copy-evidence" title="Copy evidence comparison" style="position: absolute; top: 10px; right: 10px; background: none; border: none; color: #a4b0be; cursor: pointer; font-size: 0.9rem; padding: 2px 6px; border-radius: 4px; transition: all 0.2s ease;">📋</button>
                         <div class="math-row">
-                            <span class="math-label">Baseline log(Z<sub>baseline</sub>):</span>
+                            <span class="math-label">ΛCDM Baseline log(Z<sub>lcdm</sub>):</span>
                             <span class="math-val" id="val-baseline">-</span>
                         </div>
                         <div class="math-row">
-                            <span class="math-label">Custom Model log(Z<sub>custom</sub>):</span>
+                            <span class="math-label" id="label-custom-model">Custom Model log(Z<sub>custom</sub>):</span>
                             <span class="math-val highlight-cyan" id="val-custom">-</span>
                         </div>
                         <div class="math-divider"></div>
@@ -1024,7 +1028,7 @@
                         
                         <div style="display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;">
                             <div style="flex: 1; min-width: 120px;">
-                                <label style="display: block; font-size: 0.72rem; color: #a4b0be; margin-bottom: 4px;">Run A (Baseline):</label>
+                                <label style="display: block; font-size: 0.72rem; color: #a4b0be; margin-bottom: 4px;">Run A (ΛCDM Baseline):</label>
                                 <select id="select-run-a" style="width: 100%; padding: 6px; border-radius: 4px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1); color: #fff; font-size: 0.78rem;"></select>
                             </div>
                             <div style="flex: 1; min-width: 120px;">

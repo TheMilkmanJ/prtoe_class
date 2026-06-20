@@ -31,6 +31,29 @@ def send_dashboard_log(message):
     except Exception:
         pass # Fail silently if dashboard isn't running
 
+def update_yaml_priors(proposed_new_bounds, config_path):
+    """Updates the YAML config file with the proposed new bounds for the parameters."""
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+            
+        params = config.get('params', {})
+        for name, (new_min, new_max) in proposed_new_bounds.items():
+            if name in params and isinstance(params[name], dict):
+                if 'prior' in params[name] and isinstance(params[name]['prior'], dict):
+                    params[name]['prior']['min'] = float(new_min)
+                    params[name]['prior']['max'] = float(new_max)
+                    # Adjust proposal to scale with the wider range
+                    if 'proposal' in params[name]:
+                        if isinstance(params[name]['proposal'], (int, float)):
+                            params[name]['proposal'] = float((new_max - new_min) / 20.0)
+                            
+        with open(config_path, 'w') as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        print(f"Successfully auto-updated YAML priors in {config_path}")
+    except Exception as e:
+        print(f"Error auto-updating YAML priors: {e}")
+
 def get_best_fit_from_log(log_path):
     """Parses the log file to extract real-time evaluations and find the best fit chi2 and parameters."""
     if not log_path or not os.path.exists(log_path):

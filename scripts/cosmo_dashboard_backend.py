@@ -52,6 +52,7 @@ COSMO_CURVES_CACHE = None
 LAST_COMPUTED_CHI2 = None
 HISTORY_FRAMES = []
 LAST_FRAME_MOD_TIME = 0
+LAST_FRAME_HASH = None
 LOG_EVAL_POSITION = 0
 LOG_EVAL_COUNT = 0
 
@@ -129,6 +130,40 @@ def get_output_prefix_from_yaml(config_path: str) -> str:
         pass
     # Fallback if not found
     return "chains/cobaya_run"
+
+def get_model_yaml_path(output_prefix: str) -> Optional[Path]:
+    """Finds a configuration YAML file corresponding to output_prefix (either updated, input, active, or workspace search)."""
+    global ACTIVE_YAML_PATH
+    
+    # 1. Try updated.yaml
+    updated_yaml = Path(f"{output_prefix}.updated.yaml")
+    if updated_yaml.exists():
+        return updated_yaml
+        
+    # 2. Try input.yaml
+    input_yaml = Path(f"{output_prefix}.input.yaml")
+    if input_yaml.exists():
+        return input_yaml
+        
+    # 3. Try ACTIVE_YAML_PATH
+    if ACTIVE_YAML_PATH and Path(ACTIVE_YAML_PATH).exists():
+        try:
+            if get_output_prefix_from_yaml(ACTIVE_YAML_PATH) == output_prefix:
+                return Path(ACTIVE_YAML_PATH)
+        except Exception:
+            pass
+            
+    # 4. Search in root and chains/ directories for matching output field
+    for ypath in [Path("."), Path("chains")]:
+        if ypath.exists():
+            for yfile in ypath.glob("*.yaml"):
+                try:
+                    if get_output_prefix_from_yaml(str(yfile)) == output_prefix:
+                        return yfile
+                except Exception:
+                    pass
+    return None
+
 
 def parse_polychord_stats(stats_file: Path, resume_file: Optional[Path] = None):
     """Parses a PolyChord .stats file or .resume file to extract key metrics (dead points, evidence)."""
@@ -418,8 +453,8 @@ def get_best_fit_details(output_prefix: str):
     
     for fpath, ftype in files_to_check:
         fpath_str = str(fpath)
-        updated_yaml = Path(f"{output_prefix}.updated.yaml")
-        if not updated_yaml.exists():
+        yaml_to_read = get_model_yaml_path(output_prefix)
+        if not yaml_to_read or not yaml_to_read.exists():
             continue
             
         try:
@@ -432,7 +467,7 @@ def get_best_fit_details(output_prefix: str):
             best_chi2_this_file = current_best["total"] if current_best else float('inf')
             best_fit_this_file = current_best
             
-            with open(updated_yaml, 'r') as f:
+            with open(yaml_to_read, 'r') as f:
                 up_cfg = yaml.safe_load(f)
                 
             params = up_cfg.get('params', {})
@@ -591,12 +626,27 @@ def get_best_fit_details(output_prefix: str):
     return None
 
 def check_and_update_history():
-    global LAST_FRAME_MOD_TIME, HISTORY_FRAMES
+    global LAST_FRAME_MOD_TIME, HISTORY_FRAMES, LAST_FRAME_HASH
     plot_path = Path("prtoe_posteriors.png")
     if plot_path.exists():
         mod_time = plot_path.stat().st_mtime
         if mod_time > LAST_FRAME_MOD_TIME:
             LAST_FRAME_MOD_TIME = mod_time
+            
+            # Compute MD5 hash of the new plot to verify content changes
+            try:
+                import hashlib
+                hasher = hashlib.md5()
+                with open(plot_path, 'rb') as f:
+                    hasher.update(f.read())
+                curr_hash = hasher.hexdigest()
+            except Exception:
+                curr_hash = None
+                
+            if curr_hash and curr_hash == LAST_FRAME_HASH:
+                return  # Skip adding to history if image content hasn't changed
+                
+            LAST_FRAME_HASH = curr_hash
             hist_dir = Path("dashboard/history")
             hist_dir.mkdir(parents=True, exist_ok=True)
             
@@ -852,16 +902,22 @@ def find_and_adopt_running_cobaya():
             cmdline = proc.info.get('cmdline')
             if cmdline:
                 cmd_str = " ".join(cmdline)
-                # Check for "cobaya" and "uploaded_config.yaml"
-                if "cobaya" in cmd_str and "uploaded_config.yaml" in cmd_str:
-                    pid = proc.info['pid']
-                    RUNNING_PROCESS = AdoptedProcess(pid)
-                    ACTIVE_YAML_PATH = "uploaded_config.yaml"
-                    ACTIVE_OUTPUT_PREFIX = get_output_prefix_from_yaml(ACTIVE_YAML_PATH)
-                    CURRENT_STATUS = "running"
-                    RUN_START_TIME = proc.info['create_time']
-                    print(f"Adopted running Cobaya process: PID {pid}, Output Prefix: {ACTIVE_OUTPUT_PREFIX}")
-                    break
+                # Check for "cobaya" and any .yaml or .ini config file in arguments
+                if "cobaya" in cmd_str and "run" in cmd_str:
+                    yaml_file = None
+                    for arg in cmdline:
+                        if arg.endswith('.yaml') or arg.endswith('.ini'):
+                            yaml_file = arg
+                            break
+                    if yaml_file:
+                        pid = proc.info['pid']
+                        RUNNING_PROCESS = AdoptedProcess(pid)
+                        ACTIVE_YAML_PATH = yaml_file
+                        ACTIVE_OUTPUT_PREFIX = get_output_prefix_from_yaml(ACTIVE_YAML_PATH)
+                        CURRENT_STATUS = "running"
+                        RUN_START_TIME = proc.info['create_time']
+                        print(f"Adopted running Cobaya process: PID {pid}, Config: {ACTIVE_YAML_PATH}, Output Prefix: {ACTIVE_OUTPUT_PREFIX}")
+                        break
         except Exception:
             pass
 
@@ -879,6 +935,14 @@ def find_and_adopt_running_cobaya():
                         break
             except Exception:
                 pass
+        
+        # Self-healing: if no monitor process is running but we adopted a running Cobaya run, start a new monitor process!
+        if MONITOR_PROCESS is None:
+            conda_env_path = os.environ.get("CONDA_PREFIX", "")
+            python_executable = os.path.join(conda_env_path, "bin", "python3") if conda_env_path else "python3"
+            monitor_command = f"{python_executable} plot_chains.py --config {ACTIVE_YAML_PATH} --monitor-and-stop --interval 150"
+            MONITOR_PROCESS = subprocess.Popen(monitor_command, shell=True, preexec_fn=os.setsid)
+            print(f"Spawned new Monitor process for adopted run: PID {MONITOR_PROCESS.pid}")
 
 def get_realtime_posterior_stats(output_prefix):
     import numpy as np
@@ -946,10 +1010,10 @@ def get_realtime_posterior_stats(output_prefix):
                         names.append(parts[0].lower())
                         
         if not names:
-            updated_yaml = output_prefix + ".updated.yaml"
-            if os.path.exists(updated_yaml):
+            yaml_to_read = get_model_yaml_path(output_prefix)
+            if yaml_to_read and yaml_to_read.exists():
                 try:
-                    with open(updated_yaml, 'r') as f:
+                    with open(yaml_to_read, 'r') as f:
                         up_cfg = yaml.safe_load(f)
                     if 'params' in up_cfg:
                         params_cfg = up_cfg.get('params', {})
@@ -1099,6 +1163,8 @@ async def get_status():
         "status": CURRENT_STATUS,
         "run_start_time": RUN_START_TIME,
         "localtunnel_url": get_localtunnel_url(),
+        "active_output_prefix": ACTIVE_OUTPUT_PREFIX,
+        "active_yaml_path": ACTIVE_YAML_PATH,
         "dead_points": 0,
         "log_evidence": None,
         "log_evidence_error": None,
@@ -1350,8 +1416,8 @@ async def get_status():
         ncdm_fluid_approx = None
         q_bins = None
         l_max_ncdm = None
-        updated_yaml = Path(f"{ACTIVE_OUTPUT_PREFIX}.updated.yaml")
-        if updated_yaml.exists():
+        updated_yaml = get_model_yaml_path(ACTIVE_OUTPUT_PREFIX)
+        if updated_yaml and updated_yaml.exists():
             try:
                 with open(updated_yaml, 'r') as f:
                     up_cfg = yaml.safe_load(f)
@@ -1495,8 +1561,8 @@ async def get_status():
 
     k_baseline = 6
     k_custom = 6
-    updated_yaml = Path(f"{ACTIVE_OUTPUT_PREFIX}.updated.yaml")
-    if updated_yaml.exists():
+    updated_yaml = get_model_yaml_path(ACTIVE_OUTPUT_PREFIX)
+    if updated_yaml and updated_yaml.exists():
         try:
             with open(updated_yaml, 'r') as f:
                 up_cfg = yaml.safe_load(f)
@@ -1697,7 +1763,7 @@ async def upload_config(file: UploadFile = File(...)):
 @app.post("/api/start_run")
 async def start_run(config: RunConfig):
     """Starts a Cobaya run with the specified configuration."""
-    global RUNNING_PROCESS, MONITOR_PROCESS, ACTIVE_OUTPUT_PREFIX, EXTERNAL_LOGS, ACTIVE_YAML_PATH, CURRENT_STATUS, WATCHDOG_ALERTS, RUN_START_TIME, LOG_FILE_POSITION, BEST_FIT_LOG_CACHE, RAW_FILE_POSITIONS, BEST_FIT_FILE_CACHE, HISTORY_FRAMES, LAST_FRAME_MOD_TIME, COSMO_CURVES_CACHE, LAST_COMPUTED_CHI2, LOG_EVAL_POSITION, LOG_EVAL_COUNT
+    global RUNNING_PROCESS, MONITOR_PROCESS, ACTIVE_OUTPUT_PREFIX, EXTERNAL_LOGS, ACTIVE_YAML_PATH, CURRENT_STATUS, WATCHDOG_ALERTS, RUN_START_TIME, LOG_FILE_POSITION, BEST_FIT_LOG_CACHE, RAW_FILE_POSITIONS, BEST_FIT_FILE_CACHE, HISTORY_FRAMES, LAST_FRAME_MOD_TIME, LAST_FRAME_HASH, COSMO_CURVES_CACHE, LAST_COMPUTED_CHI2, LOG_EVAL_POSITION, LOG_EVAL_COUNT
     LOG_FILE_POSITION = 0
     BEST_FIT_LOG_CACHE = None
     RAW_FILE_POSITIONS = {}
@@ -1705,6 +1771,7 @@ async def start_run(config: RunConfig):
 
     HISTORY_FRAMES = []
     LAST_FRAME_MOD_TIME = 0
+    LAST_FRAME_HASH = None
     COSMO_CURVES_CACHE = None
     LAST_COMPUTED_CHI2 = None
     LOG_EVAL_POSITION = 0
@@ -2170,9 +2237,10 @@ except Exception as e:
 
 @app.post("/api/reset_history")
 async def reset_history():
-    global HISTORY_FRAMES, LAST_FRAME_MOD_TIME
+    global HISTORY_FRAMES, LAST_FRAME_MOD_TIME, LAST_FRAME_HASH
     HISTORY_FRAMES = []
     LAST_FRAME_MOD_TIME = 0
+    LAST_FRAME_HASH = None
     
     hist_dir = Path("dashboard/history")
     if hist_dir.exists():
@@ -2234,22 +2302,37 @@ async def recover_sampler(req: RecoverSamplerRequest):
             config = yaml.safe_load(f)
 
         params = config.get('params', {})
+        # Load watchdog alerts map to apply active suggestions if they exist
+        alerts_map = {alert['parameter']: alert for alert in WATCHDOG_ALERTS}
+
         for p_name, p_val in params.items():
             if isinstance(p_val, dict):
                 # Widen priors
+                prior_updated_by_watchdog = False
                 if 'prior' in p_val and isinstance(p_val['prior'], dict):
                     p_min = p_val['prior'].get('min')
                     p_max = p_val['prior'].get('max')
                     if p_min is not None and p_max is not None:
-                        span = p_max - p_min
-                        widen_amount = span * req.widen_percent
-                        p_val['prior']['min'] = float(p_min - widen_amount / 2.0)
-                        p_val['prior']['max'] = float(p_max + widen_amount / 2.0)
+                        if p_name in alerts_map:
+                            alert = alerts_map[p_name]
+                            p_val['prior']['min'] = float(alert['new_min'])
+                            p_val['prior']['max'] = float(alert['new_max'])
+                            prior_updated_by_watchdog = True
+                            print(f"Applied watchdog recommendation for prior {p_name}: [{alert['new_min']}, {alert['new_max']}]")
+                        else:
+                            span = p_max - p_min
+                            widen_amount = span * req.widen_percent
+                            p_val['prior']['min'] = float(p_min - widen_amount / 2.0)
+                            p_val['prior']['max'] = float(p_max + widen_amount / 2.0)
                 
                 # Adjust proposals
                 if 'proposal' in p_val:
                     if isinstance(p_val['proposal'], (int, float)):
-                        p_val['proposal'] = float(p_val['proposal'] * req.proposal_scale)
+                        if prior_updated_by_watchdog and p_name in alerts_map:
+                            alert = alerts_map[p_name]
+                            p_val['proposal'] = float((alert['new_max'] - alert['new_min']) / 20.0)
+                        else:
+                            p_val['proposal'] = float(p_val['proposal'] * req.proposal_scale)
                 elif 'prior' in p_val:
                     p_min = p_val['prior'].get('min')
                     p_max = p_val['prior'].get('max')
@@ -2393,10 +2476,10 @@ async def get_corner_plot(
                         labels.append(parts[1].strip().replace('*', '') if len(parts) > 1 else parts[0])
         
         if not names:
-            updated_yaml = output_prefix + ".updated.yaml"
-            if not os.path.exists(updated_yaml):
-                updated_yaml = config_name
-            if os.path.exists(updated_yaml):
+            updated_yaml = get_model_yaml_path(output_prefix)
+            if not updated_yaml or not updated_yaml.exists():
+                updated_yaml = Path(config_name) if config_name else None
+            if updated_yaml and updated_yaml.exists():
                 try:
                     with open(updated_yaml, 'r') as f:
                         up_cfg = yaml.safe_load(f)
@@ -2795,9 +2878,12 @@ async def compare_models():
         full_prefix = f"chains/{prefix}"
         summary_path = Path(f"{full_prefix}_summary.txt")
         stats_path = Path(f"{full_prefix}.stats")
-        updated_yaml = Path(f"{full_prefix}.updated.yaml")
+        updated_yaml = get_model_yaml_path(full_prefix)
         
-        model_name = prefix.replace("_", " ").title()
+        if prefix == "lcdm_polychord":
+            model_name = "ΛCDM Baseline"
+        else:
+            model_name = prefix.replace("_", " ").title()
         
         logz = None
         logz_err = None
@@ -2865,7 +2951,7 @@ async def compare_models():
             curves = MODEL_CURVES_CACHE[cache_key]
         else:
             old_yaml = ACTIVE_YAML_PATH
-            if updated_yaml.exists():
+            if updated_yaml and updated_yaml.exists():
                 ACTIVE_YAML_PATH = str(updated_yaml)
             curves = compute_cosmo_curves(best_params)
             ACTIVE_YAML_PATH = old_yaml
@@ -3163,8 +3249,8 @@ def get_chain_columns_and_data(output_prefix: str):
     if not files_to_check:
         return None, None
         
-    updated_yaml = Path(f"{output_prefix}.updated.yaml")
-    if not updated_yaml.exists():
+    updated_yaml = get_model_yaml_path(output_prefix)
+    if not updated_yaml or not updated_yaml.exists():
         return None, None
         
     try:
@@ -4160,8 +4246,8 @@ async def list_runs():
     
     if chains_dir.exists():
         prefixes = set()
-        for f in chains_dir.glob("*.txt"):
-            if not f.name.startswith("archive_") and f.stem != "myevolution" and f.stem != "myselection":
+        for f in chains_dir.glob("*.log"):
+            if not f.name.startswith("archive_"):
                 prefixes.add(f.stem)
         runs.extend(list(prefixes))
         
@@ -4714,10 +4800,39 @@ async def get_dashboard_errors():
     try:
         with open(ERROR_LOG_PATH, 'r') as f:
             lines = [line.strip() for line in f.readlines()[-100:]]
-        return {"status": "success", "errors": lines}
+        # Return index along with lines to make it easy to acknowledge by index
+        errors_list = [{"index": i, "text": line} for i, line in enumerate(lines)]
+        return {"status": "success", "errors": errors_list}
     except Exception as e:
         log_dashboard_error(f"Error reading dashboard error log: {e}")
         return {"status": "error", "message": str(e)}
+
+class AcknowledgeErrorRequest(BaseModel):
+    error_index: int
+
+@app.post("/api/acknowledge_error")
+async def acknowledge_error(req: AcknowledgeErrorRequest):
+    try:
+        if ERROR_LOG_PATH.exists():
+            with open(ERROR_LOG_PATH, 'r') as f:
+                lines = f.readlines()
+            
+            total_lines = len(lines)
+            start_idx = max(0, total_lines - 100)
+            last_100_lines = lines[start_idx:]
+            
+            if 0 <= req.error_index < len(last_100_lines):
+                full_idx = start_idx + req.error_index
+                del lines[full_idx]
+                with open(ERROR_LOG_PATH, 'w') as f:
+                    f.writelines(lines)
+                return {"status": "success", "message": "Error acknowledged and removed."}
+            else:
+                raise HTTPException(status_code=400, detail="Invalid error index.")
+        return {"status": "success", "message": "No error log exists."}
+    except Exception as e:
+        log_dashboard_error(f"Error acknowledging error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/clear_dashboard_errors")
 async def clear_dashboard_errors():
