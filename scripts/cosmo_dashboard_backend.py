@@ -1248,9 +1248,20 @@ async def get_status():
         if not stats_file.exists() and raw_stats_file.exists():
             stats_file = raw_stats_file
         resume_file = prefix_path.parent / f"{prefix_path.name}_polychord_raw" / f"{prefix_path.name}.resume"
+        
+        # Check file modification times to filter out stale leftover files from previous runs
+        is_stale = False
+        if CURRENT_STATUS == "running" and RUN_START_TIME:
+            # We filter files that have not been modified since the run started (with a 2s buffer)
+            if stats_file.exists() and stats_file.stat().st_mtime < RUN_START_TIME - 2.0:
+                stats_file = Path("nonexistent_file_placeholder")
+            if resume_file.exists() and resume_file.stat().st_mtime < RUN_START_TIME - 2.0:
+                resume_file = None
+                is_stale = True
+                
         stats_data.update(parse_polychord_stats(stats_file, resume_file))
         
-        fit_details = get_best_fit_details(ACTIVE_OUTPUT_PREFIX)
+        fit_details = None if is_stale else get_best_fit_details(ACTIVE_OUTPUT_PREFIX)
         if fit_details is not None:
             stats_data["best_chi2"] = fit_details["total"]
             stats_data["best_cmb"] = fit_details.get("cmb", 0.0)
