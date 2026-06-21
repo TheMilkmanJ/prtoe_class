@@ -47,6 +47,8 @@ CURRENT_STATUS = "idle"
 WATCHDOG_ALERTS = []
 # Tracks the start time of the active run to compute ETA and speed
 RUN_START_TIME = None
+# Holds the localtunnel (phone) URL injected by the launcher wrapper script
+LOCALTUNNEL_URL = None
 
 # --- Cosmology Curves & Run History Cache ---
 COSMO_CURVES_CACHE = None
@@ -1109,7 +1111,15 @@ def get_realtime_posterior_stats(output_prefix):
         return {}
 
 def get_localtunnel_url():
-    """Scans the Gemini task log files to find any active localtunnel URLs."""
+    """Returns the active localtunnel (phone) URL.
+    
+    Prefers a URL that was directly injected by the launch wrapper (stable).
+    Falls back to scanning Gemini task log files for legacy compatibility.
+    """
+    global LOCALTUNNEL_URL
+    if LOCALTUNNEL_URL:
+        return LOCALTUNNEL_URL
+    # Legacy fallback: scan Gemini task log files
     import glob
     import re
     search_pattern = "/home/themilkmanj/.gemini/antigravity-cli/brain/*/.system_generated/tasks/task-*.log"
@@ -5317,6 +5327,19 @@ async def clear_dashboard_errors():
     except Exception as e:
         log_dashboard_error(f"Error clearing dashboard error log: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+class TunnelUrlRequest(BaseModel):
+    url: str
+
+@app.post("/api/set_tunnel_url")
+async def set_tunnel_url(req: TunnelUrlRequest):
+    """Called by the launch wrapper to inject the active localtunnel URL directly.
+    This is more reliable than scanning log files and survives tunnel restarts.
+    """
+    global LOCALTUNNEL_URL
+    LOCALTUNNEL_URL = req.url.strip() or None
+    print(f"[Tunnel] Phone URL updated: {LOCALTUNNEL_URL}")
+    return {"status": "success", "url": LOCALTUNNEL_URL}
 
 # --- Serve Dashboard UI ---
 if Path("dashboard").exists():
