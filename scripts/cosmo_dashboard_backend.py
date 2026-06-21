@@ -14,6 +14,7 @@ import re
 import yaml
 from pathlib import Path
 import time
+import datetime
 from typing import List, Optional
 import asyncio
 import math
@@ -65,9 +66,13 @@ import secrets
 security = HTTPBasic()
 
 def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
-    required_user = os.environ.get("DASHBOARD_USER", "CosmicExplorer")
-    required_pass = os.environ.get("DASHBOARD_PASS", "theuniverse")
-    
+    required_user = os.environ.get("DASHBOARD_USER", "")
+    required_pass = os.environ.get("DASHBOARD_PASS", "")
+    if not required_user or not required_pass:
+        raise HTTPException(
+            status_code=500,
+            detail="Server misconfiguration: DASHBOARD_USER and DASHBOARD_PASS environment variables must be set."
+        )
     correct_username = secrets.compare_digest(credentials.username, required_user)
     correct_password = secrets.compare_digest(credentials.password, required_pass)
     
@@ -117,6 +122,9 @@ class WatchdogReport(BaseModel):
 class ApplyPriorsRequest(BaseModel):
     config_name: str
     updates: dict
+
+class CenterPriorsRequest(BaseModel):
+    config_name: str
 
 # --- Helper Functions ---
 def get_output_prefix_from_yaml(config_path: str) -> str:
@@ -183,6 +191,11 @@ def parse_polychord_stats(stats_file: Path, resume_file: Optional[Path] = None):
             ndead_match = re.search(r"ndead:\s*(\d+)", content)
             if ndead_match:
                 stats["dead_points"] = int(ndead_match.group(1))
+
+            # Read nlive
+            nlive_match = re.search(r"nlive:\s*(\d+)", content)
+            if nlive_match:
+                stats["nlive"] = int(nlive_match.group(1))
 
             # Read log(Z) and error from stats file
             logz_match = re.search(r"log\(Z\)\s*=\s*([-\d.eE+]+)\s*\+/-\s*([-\d.eE+]+)", content)
@@ -944,6 +957,35 @@ def find_and_adopt_running_cobaya():
             MONITOR_PROCESS = subprocess.Popen(monitor_command, shell=True, preexec_fn=os.setsid)
             print(f"Spawned new Monitor process for adopted run: PID {MONITOR_PROCESS.pid}")
 
+async def background_process_watcher():
+    global RUNNING_PROCESS, CURRENT_STATUS, ACTIVE_OUTPUT_PREFIX
+    while True:
+        try:
+            if not RUNNING_PROCESS:
+                find_and_adopt_running_cobaya()
+            
+            if RUNNING_PROCESS:
+                if RUNNING_PROCESS.poll() is None:
+                    CURRENT_STATUS = "running"
+                else:
+                    CURRENT_STATUS = "completed" if RUNNING_PROCESS.returncode == 0 else "stopped"
+                    if CURRENT_STATUS == "completed" and "lcdm" in (ACTIVE_OUTPUT_PREFIX or "").lower():
+                        try:
+                            auto_archive_lcdm()
+                        except Exception as ex:
+                            log_dashboard_error(f"Background auto-archiving LCDM completed run failed: {ex}")
+                    RUNNING_PROCESS = None
+        except Exception as e:
+            try:
+                log_dashboard_error(f"Error in background_process_watcher: {e}")
+            except Exception:
+                pass
+        await asyncio.sleep(10)
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(background_process_watcher())
+
 def get_realtime_posterior_stats(output_prefix):
     import numpy as np
     
@@ -1085,12 +1127,63 @@ def get_localtunnel_url():
             pass
     return None
 
+def auto_archive_lcdm():
+    """Automatically copies completed lcdm run chains to a safe archived folder."""
+    global ACTIVE_OUTPUT_PREFIX
+    chains_dir = Path("chains")
+    dest_dir = chains_dir / "lcdm_baseline_archived"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    
+    output_prefix = ACTIVE_OUTPUT_PREFIX or "chains/lcdm_polychord"
+    prefix_path = Path(output_prefix)
+    prefix_name = prefix_path.name
+    
+    if prefix_path.parent.exists():
+        matching_files = list(prefix_path.parent.glob(f"{prefix_name}.*"))
+        for f in matching_files:
+            try:
+                shutil.copy2(f, dest_dir / f.name)
+            except Exception:
+                pass
+            
+        raw_dir = prefix_path.parent / f"{prefix_name}_polychord_raw"
+        if raw_dir.exists():
+            try:
+                shutil.copytree(raw_dir, dest_dir / raw_dir.name, dirs_exist_ok=True)
+            except Exception:
+                pass
+            
+        cluster_dir = prefix_path.parent / f"{prefix_name}_clusters"
+        if cluster_dir.exists():
+            try:
+                shutil.copytree(cluster_dir, dest_dir / cluster_dir.name, dirs_exist_ok=True)
+            except Exception:
+                pass
+        log_dashboard_error("Auto-archived completed LCDM run successfully to chains/lcdm_baseline_archived")
+
 def find_lcdm_scores():
     logz = None
     chi2 = None
     chains_dir = Path("chains")
     if not chains_dir.exists():
         return logz, chi2
+
+    # Check the permanent baseline archive folder first!
+    archived_dir = chains_dir / "lcdm_baseline_archived"
+    if archived_dir.exists():
+        stats_file = archived_dir / "lcdm_polychord.stats"
+        raw_stats_file = archived_dir / "lcdm_polychord_polychord_raw" / "lcdm_polychord.stats"
+        if not stats_file.exists() and raw_stats_file.exists():
+            stats_file = raw_stats_file
+        resume_file = archived_dir / "lcdm_polychord_polychord_raw" / "lcdm_polychord.resume"
+        
+        stats = parse_polychord_stats(stats_file, resume_file)
+        if stats.get("log_evidence") is not None:
+            logz = stats["log_evidence"]
+            fit_details = get_best_fit_details(str(archived_dir / "lcdm_polychord"))
+            if fit_details is not None:
+                chi2 = fit_details["total"]
+                return logz, chi2
 
     candidates = []
     for f in chains_dir.glob("*.log"):
@@ -1157,6 +1250,11 @@ async def get_status():
             CURRENT_STATUS = "running"
         else:
             CURRENT_STATUS = "completed" if RUNNING_PROCESS.returncode == 0 else "stopped"
+            if CURRENT_STATUS == "completed" and "lcdm" in (ACTIVE_OUTPUT_PREFIX or "").lower():
+                try:
+                    auto_archive_lcdm()
+                except Exception as ex:
+                    log_dashboard_error(f"Auto-archiving LCDM completed run failed: {ex}")
             RUNNING_PROCESS = None
 
     stats_data = {
@@ -1177,6 +1275,7 @@ async def get_status():
         "best_other": 0.0,
         "best_raw_params": None,
         "init_percent": 0,
+        "convergence_percent": 0,
         "cpu_percent": psutil.cpu_percent(),
         "terminal_output": [],
         "external_logs": list(EXTERNAL_LOGS),
@@ -1251,7 +1350,24 @@ async def get_status():
         
         # Check file modification times to filter out stale leftover files from previous runs
         is_stale = False
-        if CURRENT_STATUS == "running" and RUN_START_TIME:
+        is_resume_run = False
+        if RUNNING_PROCESS:
+            try:
+                p = psutil.Process(RUNNING_PROCESS.pid)
+                cmdline = p.cmdline()
+                cmd_str = " ".join(cmdline)
+                if "-r" in cmdline or "--resume" in cmdline or "-r" in cmd_str or "--resume" in cmd_str:
+                    is_resume_run = True
+                else:
+                    for child in p.children(recursive=True):
+                        child_cmd = " ".join(child.cmdline())
+                        if "-r" in child.cmdline() or "--resume" in child.cmdline() or "-r" in child_cmd or "--resume" in child_cmd:
+                            is_resume_run = True
+                            break
+            except Exception:
+                pass
+
+        if CURRENT_STATUS == "running" and RUN_START_TIME and not is_resume_run:
             # We filter files that have not been modified since the run started (with a 2s buffer)
             if stats_file.exists() and stats_file.stat().st_mtime < RUN_START_TIME - 2.0:
                 stats_file = Path("nonexistent_file_placeholder")
@@ -1272,6 +1388,51 @@ async def get_status():
             stats_data["best_other"] = fit_details.get("other", 0.0)
             stats_data["best_raw_params"] = fit_details["raw_params"]
 
+        # Estimate target dead points based on dimensions and live points (nlive)
+        ndims = 8  # Default dimensions for typical cosmological runs
+        nlive = stats_data.get("nlive")
+        
+        # Fallback 1: Try to get nlive from the active configuration yaml
+        if not nlive:
+            yaml_to_read = get_model_yaml_path(ACTIVE_OUTPUT_PREFIX)
+            if yaml_to_read and yaml_to_read.exists():
+                try:
+                    with open(yaml_to_read, 'r') as f:
+                        up_cfg = yaml.safe_load(f)
+                    nlive = up_cfg.get('sampler', {}).get('polychord', {}).get('nlive', None)
+                except Exception:
+                    pass
+        
+        if resume_file and resume_file.exists():
+            try:
+                with open(resume_file, "r") as f:
+                    lines = f.readlines()
+                for idx, line in enumerate(lines):
+                    if "=== Number of dimensions ===" in line:
+                        ndims = int(lines[idx+1].strip())
+                        break
+            except Exception:
+                pass
+                
+            # Fallback 2: Parse prior_info to get nprior, and compute nlive = nprior / 10
+            if not nlive:
+                prior_info = resume_file.with_suffix(".prior_info")
+                if prior_info.exists():
+                    try:
+                        with open(prior_info, "r") as f:
+                            for line in f:
+                                if "nprior" in line and "=" in line:
+                                    nprior = int(line.split("=")[1].strip())
+                                    nlive = max(1, nprior // 10)
+                                    break
+                    except Exception:
+                        pass
+        
+        if not nlive:
+            nlive = 200  # Default live points fallback
+            
+        target_pts = max(3000, ndims * nlive)
+
         # Speed & ETA
         if CURRENT_STATUS == "running" and RUN_START_TIME:
             elapsed = time.time() - RUN_START_TIME
@@ -1281,12 +1442,21 @@ async def get_status():
                 pts_per_min = pts_per_sec * 60
                 stats_data["speed"] = f"{pts_per_min:.1f} pts/min"
                 
-                remaining_pts = max(0, 3000 - dead_pts)
+                remaining_pts = max(0, target_pts - dead_pts)
                 if pts_per_sec > 0:
                     remaining_sec = remaining_pts / pts_per_sec
                     hours = int(remaining_sec // 3600)
                     minutes = int((remaining_sec % 3600) // 60)
                     stats_data["eta"] = f"{hours}h {minutes}m" if hours > 0 else f"{minutes}m"
+                
+        # Determine convergence percent dynamically
+        dead_pts = stats_data.get("dead_points", 0)
+        if CURRENT_STATUS == "completed":
+            stats_data["convergence_percent"] = 100
+        elif CURRENT_STATUS == "idle":
+            stats_data["convergence_percent"] = 0
+        else:
+            stats_data["convergence_percent"] = min(int((dead_pts / target_pts) * 100), 99)
 
         # Parse constraints from summary file
         summary_file = Path(f"{ACTIVE_OUTPUT_PREFIX}_summary.txt")
@@ -1753,11 +1923,47 @@ async def get_baselines():
     if not isinstance(entry, dict):
         entry = {"log_evidence": float(entry) if entry is not None else None, "best_chi2": None}
         
+    # Attempt to load detailed baseline dataset breakdowns
+    chains_dir = Path("chains")
+    archived_dir = chains_dir / "lcdm_baseline_archived"
+    loaded_breakdowns = False
+    
+    if archived_dir.exists():
+        fit_details = get_best_fit_details(str(archived_dir / "lcdm_polychord"))
+        if fit_details is not None:
+            entry["best_chi2"] = fit_details["total"]
+            entry["best_cmb"] = fit_details.get("cmb", 0.0)
+            entry["best_bao"] = fit_details.get("bao", 0.0)
+            entry["best_desi"] = fit_details.get("desi", 0.0)
+            entry["best_sn"] = fit_details.get("sn", 0.0)
+            entry["best_lensing"] = fit_details.get("lensing", 0.0)
+            entry["best_other"] = fit_details.get("other", 0.0)
+            loaded_breakdowns = True
+            
+    if not loaded_breakdowns and chains_dir.exists():
+        candidates = []
+        for f in chains_dir.glob("*.log"):
+            stem = f.stem
+            if "lcdm" in stem.lower():
+                candidates.append(stem)
+        for prefix in candidates:
+            fit_details = get_best_fit_details(str(chains_dir / prefix))
+            if fit_details is not None:
+                entry["best_chi2"] = fit_details["total"]
+                entry["best_cmb"] = fit_details.get("cmb", 0.0)
+                entry["best_bao"] = fit_details.get("bao", 0.0)
+                entry["best_desi"] = fit_details.get("desi", 0.0)
+                entry["best_sn"] = fit_details.get("sn", 0.0)
+                entry["best_lensing"] = fit_details.get("lensing", 0.0)
+                entry["best_other"] = fit_details.get("other", 0.0)
+                loaded_breakdowns = True
+                break
+
     if entry.get("log_evidence") is None or entry.get("best_chi2") is None:
         dyn_logz, dyn_chi2 = find_lcdm_scores()
         if entry.get("log_evidence") is None:
             entry["log_evidence"] = dyn_logz
-        if entry.get("best_chi2") is None:
+        if entry.get("best_chi2") is None and dyn_chi2 is not None:
             entry["best_chi2"] = dyn_chi2
             
     baselines["planck_bao_pantheonplus_shoes"] = entry
@@ -1884,14 +2090,29 @@ async def start_run(config: RunConfig):
     force_over = config.force_overwrite if config.force_overwrite is not None else config.auto_rebuild
     run_flag = "-f" if force_over else "-r"
 
-    # Delete the old log file if we are doing a fresh start
+    # Delete the old log file and all other run artifacts if we are doing a fresh start
     if force_over:
-        log_file = Path(f"{ACTIVE_OUTPUT_PREFIX}.log")
-        if log_file.exists():
-            try:
-                log_file.unlink()
-            except Exception:
-                pass
+        for suffix in ["_polychord_raw", "_clusters"]:
+            dir_path = Path(f"{ACTIVE_OUTPUT_PREFIX}{suffix}")
+            if dir_path.exists() and dir_path.is_dir():
+                try:
+                    shutil.rmtree(dir_path)
+                except Exception as e:
+                    print(f"Warning: Could not delete directory {dir_path}: {e}")
+        prefix_path = Path(ACTIVE_OUTPUT_PREFIX)
+        parent_dir = prefix_path.parent
+        if parent_dir.exists():
+            for f in parent_dir.glob(f"{prefix_path.name}.*"):
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+            for f in parent_dir.glob(f"{prefix_path.name}_*"):
+                if f.is_file():
+                    try:
+                        f.unlink()
+                    except Exception:
+                        pass
 
     # Use tee -a (append) so truncating the file mid-run doesn't create sparse files full of null bytes
     # Added -bind-to core to pin MPI processes to physical cores for optimal cache usage and performance.
@@ -2001,6 +2222,92 @@ async def apply_priors_and_restart(req: ApplyPriorsRequest):
         
     asyncio.create_task(perform_restart())
     return {"message": "Priors updated and restart sequence initiated."}
+
+@app.post("/api/center_priors_on_best_fit")
+async def center_priors_on_best_fit(req: CenterPriorsRequest):
+    """Centers parameter priors around the current best-fit values and restarts the run."""
+    yaml_path = Path(req.config_name)
+    if not yaml_path.exists():
+        raise HTTPException(status_code=404, detail="Configuration file not found.")
+        
+    output_prefix = get_output_prefix_from_yaml(str(yaml_path))
+    fit_details = get_best_fit_details(output_prefix)
+    if not fit_details or not fit_details.get("raw_params"):
+        raise HTTPException(status_code=400, detail="No best-fit parameter details found to center priors on.")
+        
+    best_params = fit_details["raw_params"]
+    
+    try:
+        with open(yaml_path, 'r') as f:
+            config = yaml.safe_load(f)
+            
+        params = config.get('params', {})
+        updated = False
+        
+        for name, best_val in best_params.items():
+            if name in params and isinstance(params[name], dict):
+                p_dict = params[name]
+                if 'prior' in p_dict and isinstance(p_dict['prior'], dict):
+                    p_min = p_dict['prior'].get('min')
+                    p_max = p_dict['prior'].get('max')
+                    if p_min is not None and p_max is not None:
+                        width = p_max - p_min
+                        new_min = best_val - width / 2.0
+                        new_max = best_val + width / 2.0
+                        
+                        # Apply physical boundary safety guards
+                        if name == 'omega_b':
+                            new_min = max(0.005, new_min)
+                        elif name == 'omega_cdm':
+                            new_min = max(0.01, new_min)
+                        elif name == 'H0':
+                            new_min = max(20.0, new_min)
+                            new_max = min(150.0, new_max)
+                        elif name == 'logA':
+                            new_min = max(1.0, new_min)
+                            new_max = min(5.0, new_max)
+                        elif name == 'n_s':
+                            new_min = max(0.5, new_min)
+                            new_max = min(1.5, new_max)
+                        elif name == 'z_reio':
+                            new_min = max(2.0, new_min)
+                            new_max = min(25.0, new_max)
+                        elif name == 'm_ncdm':
+                            new_min = max(0.0, new_min)
+                            new_max = min(5.0, new_max)
+                        elif name == 'delta_prtoe':
+                            new_min = max(0.0001, new_min)
+                            new_max = min(1.0, new_max)
+                        elif name == 'xi_prtoe':
+                            new_min = max(1.0e-9, new_min)
+                            new_max = min(1.0e-3, new_max)
+                        elif name == 'zeta_prtoe':
+                            new_min = max(0.0001, new_min)
+                            new_max = min(500.0, new_max)
+                            
+                        p_dict['prior']['min'] = float(new_min)
+                        p_dict['prior']['max'] = float(new_max)
+                        
+                        p_dict['ref'] = float(best_val)
+                        updated = True
+                        
+        if not updated:
+            raise HTTPException(status_code=400, detail="No parameters with prior ranges were found to update.")
+            
+        with open(yaml_path, 'w') as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update YAML priors: {e}")
+        
+    async def perform_restart():
+        await stop_run()
+        await asyncio.sleep(3)
+        run_config = RunConfig(config_name=req.config_name, auto_rebuild=False, force_overwrite=True)
+        await start_run(run_config)
+        
+    asyncio.create_task(perform_restart())
+    return {"message": "Priors centered on best-fit parameters and clean restart sequence initiated."}
 
 @app.get("/api/download_chains")
 async def download_chains():
@@ -3546,6 +3853,124 @@ async def get_dataset_pull(config_name: str = "uploaded_config.yaml"):
         "pulls": pulls
     }
 
+@app.get("/api/fairness_audit")
+async def get_fairness_audit(config_name: str = "uploaded_config.yaml"):
+    """Compares the active config against the ΛCDM baseline config to check if the run is fair (same datasets, prior bounds)."""
+    # 1. Load active config
+    active_yaml = Path(config_name)
+    global ACTIVE_YAML_PATH
+    if not active_yaml.exists():
+        if ACTIVE_YAML_PATH and Path(ACTIVE_YAML_PATH).exists():
+            active_yaml = Path(ACTIVE_YAML_PATH)
+        else:
+            active_yaml = Path("cobaya_prtoe_polychord.yaml")
+
+    # 2. Load archived baseline config
+    baseline_yaml = Path("chains/lcdm_baseline_archived/lcdm_polychord.updated.yaml")
+    if not baseline_yaml.exists():
+        baseline_yaml = Path("chains/lcdm_baseline_archived/lcdm_polychord.input.yaml")
+    if not baseline_yaml.exists():
+        baseline_yaml = Path("chains/lcdm_polychord.updated.yaml")
+
+    if not active_yaml.exists() or not baseline_yaml.exists():
+        return {
+            "status": "error",
+            "detail": f"Configuration files missing. Active exists: {active_yaml.exists()}, Baseline exists: {baseline_yaml.exists()}"
+        }
+
+    try:
+        with open(active_yaml, 'r') as f:
+            active_cfg = yaml.safe_load(f)
+        with open(baseline_yaml, 'r') as f:
+            baseline_cfg = yaml.safe_load(f)
+    except Exception as e:
+        return {"status": "error", "detail": f"Failed to parse YAML: {e}"}
+
+    # Compare Likelihoods
+    active_likes = set(active_cfg.get('likelihood', {}).keys())
+    baseline_likes = set(baseline_cfg.get('likelihood', {}).keys())
+    
+    all_likes = list(active_likes.union(baseline_likes))
+    likes_comparison = []
+    likes_fair = True
+    
+    for l in all_likes:
+        in_active = l in active_likes
+        in_baseline = l in baseline_likes
+        status = "aligned"
+        if in_active and not in_baseline:
+            status = "added_in_custom"
+            likes_fair = False
+        elif in_baseline and not in_active:
+            status = "removed_in_custom"
+            likes_fair = False
+            
+        likes_comparison.append({
+            "name": l,
+            "in_active": in_active,
+            "in_baseline": in_baseline,
+            "status": status
+        })
+
+    # Compare Prior Bounds for shared parameters
+    active_params = active_cfg.get('params', {})
+    baseline_params = baseline_cfg.get('params', {})
+    
+    shared_params = []
+    priors_fair = True
+    
+    for p_name, p_baseline in baseline_params.items():
+        if p_name in active_params:
+            # Check if it has priors
+            active_prior = active_params[p_name].get('prior') if isinstance(active_params[p_name], dict) else None
+            baseline_prior = p_baseline.get('prior') if isinstance(p_baseline, dict) else None
+            
+            if active_prior and baseline_prior:
+                # Compare min/max
+                a_min = active_prior.get('min')
+                a_max = active_prior.get('max')
+                b_min = baseline_prior.get('min')
+                b_max = baseline_prior.get('max')
+                
+                # Check for standard min/max flat prior
+                if a_min is not None and a_max is not None and b_min is not None and b_max is not None:
+                    active_range = a_max - a_min
+                    baseline_range = b_max - b_min
+                    status = "aligned"
+                    inflation_factor = 0.0
+                    
+                    if active_range < baseline_range - 1e-5:
+                        status = "tighter_in_custom"
+                        priors_fair = False
+                        # Calculate raw evidence inflation in nat: ln(V_baseline / V_active)
+                        inflation_factor = math.log(baseline_range / active_range)
+                    elif active_range > baseline_range + 1e-5:
+                        status = "wider_in_custom"
+                        
+                    shared_params.append({
+                        "name": p_name,
+                        "baseline_min": b_min,
+                        "baseline_max": b_max,
+                        "custom_min": a_min,
+                        "custom_max": a_max,
+                        "status": status,
+                        "inflation_factor": inflation_factor
+                    })
+
+    # Parameter Count
+    active_sampled = [k for k, v in active_params.items() if isinstance(v, dict) and 'prior' in v]
+    baseline_sampled = [k for k, v in baseline_params.items() if isinstance(v, dict) and 'prior' in v]
+    
+    return {
+        "status": "success",
+        "likes_fair": likes_fair,
+        "priors_fair": priors_fair,
+        "likes_comparison": likes_comparison,
+        "priors_comparison": shared_params,
+        "active_sampled_count": len(active_sampled),
+        "baseline_sampled_count": len(baseline_sampled)
+    }
+
 # --- Model Deformation Slider ---
 class DeformationRequest(BaseModel):
     alpha: float
@@ -3879,6 +4304,21 @@ async def archive_run(req: ArchiveRequest):
                 shutil.copytree(cluster_dir, dest_cluster, dirs_exist_ok=True)
                 copied_files.append(cluster_dir.name)
                 
+            # If the archived run contains "lcdm" in its name, also copy it to the permanent lcdm_baseline_archived folder
+            if "lcdm" in prefix_name.lower():
+                try:
+                    dest_baseline = output_dir / "lcdm_baseline_archived"
+                    dest_baseline.mkdir(parents=True, exist_ok=True)
+                    for f in matching_files:
+                        shutil.copy2(f, dest_baseline / f.name)
+                    if raw_dir.exists():
+                        shutil.copytree(raw_dir, dest_baseline / raw_dir.name, dirs_exist_ok=True)
+                    if cluster_dir.exists():
+                        shutil.copytree(cluster_dir, dest_baseline / cluster_dir.name, dirs_exist_ok=True)
+                    log_dashboard_error("Saved LCDM run to permanent baseline folder chains/lcdm_baseline_archived")
+                except Exception as ex_baseline:
+                    log_dashboard_error(f"Failed to copy to baseline directory: {ex_baseline}")
+
             return {
                 "status": "success",
                 "message": f"Run archived successfully under chains/{archive_dir.name}.",
