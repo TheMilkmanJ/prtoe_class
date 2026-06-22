@@ -1,10 +1,11 @@
 import uvicorn
-from fastapi import FastAPI, UploadFile, File, HTTPException, Body, BackgroundTasks, Depends, status, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Body, BackgroundTasks, Depends, status, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response as FastAPIResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, validator
 from contextlib import asynccontextmanager
+import asyncio
 import subprocess
 import os
 import shutil
@@ -20,6 +21,7 @@ from typing import List, Optional
 import asyncio
 import math
 import secrets
+import sqlite3
 
 # Ensure parsers package is importable when running backend.py directly
 import sys
@@ -27,6 +29,50 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parent))
 
 ERROR_LOG_PATH = Path("chains/dashboard_errors.log")
+
+# Production: SQLite for run history (accommodates many models/runs, queryable)
+RUNS_DB = Path("chains/dashboard_runs.db")
+
+# WebSocket connection manager for real-time updates (production UX improvement)
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                pass
+
+manager = ConnectionManager()
+
+def init_runs_db():
+    conn = sqlite3.connect(RUNS_DB)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS runs (
+        id INTEGER PRIMARY KEY,
+        config_name TEXT,
+        model_type TEXT,
+        start_time REAL,
+        end_time REAL,
+        status TEXT,
+        log_evidence REAL,
+        best_chi2 REAL,
+        output_prefix TEXT,
+        notes TEXT
+    )''')
+    conn.commit()
+    conn.close()
+
+init_runs_db()  # ensure on load
 # === ENVIRONMENT CONFIG ===
 DASHBOARD_USER = os.environ.get("DASHBOARD_USER", "admin")
 DASHBOARD_PASS = os.environ.get("DASHBOARD_PASS")
@@ -68,9 +114,36 @@ if not DASHBOARD_PASS:
 
     os.environ["DASHBOARD_PASS"] = DASHBOARD_PASS
 
-def log_dashboard_error(msg: str, console: bool = True):
-    """Structured error/info logger. Always appends to chains/dashboard_errors.log with timestamp.
-    Optionally also prints to console (default True). Use console=False for sensitive info."""
+import logging
+from logging.handlers import RotatingFileHandler
+
+# Production logging setup with rotation (improvement from audit)
+log_dir = Path("chains")
+log_dir.mkdir(parents=True, exist_ok=True)
+logger = logging.getLogger("cosmic_dashboard")
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    handler = RotatingFileHandler(log_dir / "dashboard.log", maxBytes=10*1024*1024, backupCount=5)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    # Console
+    console = logging.StreamHandler()
+    console.setFormatter(formatter)
+    logger.addHandler(console)
+
+def log_dashboard_error(msg: str, console: bool = True, level: str = "info"):
+    """Production structured logger with rotation. Falls back to file for legacy ERROR_LOG_PATH."""
+    try:
+        if level.lower() == "error":
+            logger.error(msg)
+        elif level.lower() == "warning":
+            logger.warning(msg)
+        else:
+            logger.info(msg)
+    except Exception:
+        pass
+    # Legacy error log append for compatibility
     try:
         ERROR_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
@@ -195,6 +268,8 @@ def authenticate(request: Request, credentials: HTTPBasicCredentials = Depends(s
             lock_until = now + 60.0 # lock for 60 seconds
             log_dashboard_error(f"🔒 Rate limit triggered for IP {client_ip} due to 5 consecutive login failures.", console=True)
         FAILED_LOGIN_ATTEMPTS[client_ip] = (count, lock_until)
+        if count % 3 == 0:
+            _save_json_store(Path("chains/dashboard_failed_logins.json"), FAILED_LOGIN_ATTEMPTS)
         
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -499,6 +574,42 @@ RATE_LIMIT_STORE: dict = {}
 # token -> {"user": str, "exp": float}
 DASHBOARD_SESSIONS: dict = {}
 
+# Persistent storage paths (survive restarts, per audit)
+SESSIONS_FILE = Path("chains/dashboard_sessions.json")
+RATE_LIMITS_FILE = Path("chains/dashboard_rate_limits.json")
+
+def _load_json_store(path: Path, default: dict) -> dict:
+    if path.exists():
+        try:
+            with open(path, 'r') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return default
+
+def _save_json_store(path: Path, data: dict):
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(data, f, indent=2, default=str)
+    except Exception:
+        pass
+
+# Load on module import / startup
+DASHBOARD_SESSIONS = _load_json_store(SESSIONS_FILE, {})
+RATE_LIMIT_STORE = _load_json_store(RATE_LIMITS_FILE, {})
+
+# Clean expired sessions
+now = time.time()
+expired = [t for t, s in list(DASHBOARD_SESSIONS.items()) if now >= s.get("exp", 0)]
+for t in expired:
+    DASHBOARD_SESSIONS.pop(t, None)
+if expired:
+    _save_json_store(SESSIONS_FILE, DASHBOARD_SESSIONS)
+
+# Load persistent failed logins (for rate limiting across restarts)
+FAILED_LOGIN_ATTEMPTS = _load_json_store(Path("chains/dashboard_failed_logins.json"), {})
+
 def check_rate_limit(request: Request, endpoint: str, max_calls: int = 5, window_sec: int = 60) -> bool:
     """Returns True if the request should be rate-limited (429). Prunes old entries."""
     if request is None or not getattr(request, "client", None):
@@ -516,6 +627,8 @@ def check_rate_limit(request: Request, endpoint: str, max_calls: int = 5, window
     if len(times) >= max_calls:
         return True
     times.append(now)
+    if len(times) % 5 == 0:  # Persist periodically to avoid too much I/O
+        _save_json_store(RATE_LIMITS_FILE, RATE_LIMIT_STORE)
     return False
 
 # Import parser functions from modular package
@@ -609,6 +722,7 @@ def compute_cosmo_curves(best_fit_params):
             'w_0': -1.0,
             'w_a': 0.0,
             'gamma_0': 0.55,
+            'model_type': model_type,
             'success': False,
             'error': str(e)
         }
@@ -648,7 +762,25 @@ def compute_cosmo_curves(best_fit_params):
     if any(k in best_fit_params for k in prtoe_keys):
         use_prtoe_flag = True
         
+    # Model type detection for general support (PRTOE, wCDM, LCDM, general CLASS)
+    model_type = "general"
+    if state.active_yaml_path and os.path.exists(state.active_yaml_path):
+        try:
+            with open(state.active_yaml_path, 'r') as f:
+                up_cfg = yaml.safe_load(f)
+            theory = up_cfg.get('theory', {}).get('classy', {}).get('extra_args', {})
+            params = up_cfg.get('params', {})
+            if theory.get('use_prtoe') == 'yes' or any(k in params for k in prtoe_keys):
+                model_type = "prtoe"
+            elif 'w0_fld' in params or 'wa_fld' in params:
+                model_type = "wcdm"
+            elif not any(p in params for p in ['delta_prtoe', 'xi_prtoe', 'w0_fld']):
+                model_type = "lcdm"
+        except Exception:
+            pass
+
     if use_prtoe_flag:
+        model_type = "prtoe"
         c_params['use_prtoe'] = 'yes'
         xi = best_fit_params.get('xi_prtoe', best_fit_params.get('prtoe_xi', 1e-7))
         delta = best_fit_params.get('delta_prtoe', best_fit_params.get('prtoe_delta', 0.2))
@@ -677,6 +809,18 @@ def compute_cosmo_curves(best_fit_params):
         })
     else:
         c_params['use_prtoe'] = 'no'
+        if model_type == "wcdm":
+            # Support general wCDM without PRTOE
+            if 'w0_fld' in best_fit_params:
+                c_params['w0_fld'] = best_fit_params['w0_fld']
+            if 'wa_fld' in best_fit_params:
+                c_params['wa_fld'] = best_fit_params['wa_fld']
+            c_params['Omega_Lambda'] = best_fit_params.get('Omega_Lambda', 0.7)  # for general DE
+        # For lcdm or general, no extra, rely on standard CLASS params passed in best_fit or yaml
+
+    # Store detected model for UI/status
+    if not hasattr(state, 'model_type'):
+        state.model_type = model_type
 
     try:
         c.set(c_params)
@@ -689,9 +833,10 @@ def compute_cosmo_curves(best_fit_params):
         
         w_sample = []
         mu_sample = []
+        phi_sample = []
         
         sort_idx = np.argsort(z_bg)
-        if '(.)rho_scf' in bg and '(.)p_scf' in bg:
+        if model_type == "prtoe" and '(.)rho_scf' in bg and '(.)p_scf' in bg:
             rho_scf = np.array(bg['(.)rho_scf'])
             p_scf = np.array(bg['(.)p_scf'])
             w_scf = np.where(rho_scf > 0, p_scf / rho_scf, -1.0)
@@ -700,6 +845,7 @@ def compute_cosmo_curves(best_fit_params):
             if 'phi_scf' in bg:
                 phi_scf = np.array(bg['phi_scf'])
                 phi_interp = np.interp(z_sample, z_bg[sort_idx], phi_scf[sort_idx])
+                phi_sample = phi_interp.tolist()
                 xi = c_params.get('xi_prtoe', 0.0)
                 zeta = c_params.get('zeta_prtoe', 0.0)
                 xi_eff = xi / (1.0 + zeta * phi_interp**2)
@@ -707,17 +853,33 @@ def compute_cosmo_curves(best_fit_params):
                 mu_sample = mu_val.tolist()
             else:
                 mu_sample = [1.0] * len(z_sample)
+        elif model_type == "wcdm" and 'w0_fld' in c_params:
+            # For wCDM, compute effective w from background if available, else constant
+            w0 = c_params.get('w0_fld', -1.0)
+            wa = c_params.get('wa_fld', 0.0)
+            # Approximate w(z) = w0 + wa * z / (1+z) or use CLASS if fld
+            if '(.)p_de' in bg and '(.)rho_de' in bg:  # general DE
+                p_de = np.array(bg.get('(.)p_de', bg.get('(.)p_fld', [0])))
+                rho_de = np.array(bg.get('(.)rho_de', bg.get('(.)rho_fld', [1])))
+                w_de = np.where(rho_de > 0, p_de / rho_de, w0)
+                w_sample = np.interp(z_sample, z_bg[sort_idx], w_de[sort_idx]).tolist() if len(w_de) > 0 else [w0] * len(z_sample)
+            else:
+                w_sample = [w0 + wa * (1 - 1/(1 + z)) for z in z_sample]  # CPL approx
+            mu_sample = [1.0] * len(z_sample)  # GR for wCDM
         else:
+            # LCDM or general: w = -1, mu=1
             w_sample = [-1.0] * len(z_sample)
             mu_sample = [1.0] * len(z_sample)
             
         if len(w_sample) > 0:
             w_0 = w_sample[0]
-            if '(.)rho_scf' in bg and '(.)p_scf' in bg:
+            if model_type == "prtoe" and '(.)rho_scf' in bg and '(.)p_scf' in bg:
                 rho_scf = np.array(bg['(.)rho_scf'])
                 p_scf = np.array(bg['(.)p_scf'])
                 w_scf = np.where(rho_scf > 0, p_scf / rho_scf, -1.0)
                 w_1 = np.interp(1.0, z_bg[sort_idx], w_scf[sort_idx])
+            elif model_type == "wcdm":
+                w_1 = w_sample[-1] if len(w_sample) > 1 else w_0  # approx at high z
             else:
                 w_1 = -1.0
             w_a = 2.0 * (w_1 - w_0)
@@ -751,6 +913,7 @@ def compute_cosmo_curves(best_fit_params):
             'w_0': float(w_0),
             'w_a': float(w_a),
             'gamma_0': float(gamma_0),
+            'model_type': model_type,
             'success': True
         }
     except Exception as e:
@@ -768,6 +931,7 @@ def compute_cosmo_curves(best_fit_params):
             'w_0': -1.0,
             'w_a': 0.0,
             'gamma_0': 0.55,
+            'model_type': model_type,
             'success': False,
             'error': str(e)
         }
@@ -814,6 +978,50 @@ def ensure_halofit_in_config(yaml_path: Path):
     except Exception:
         pass
     return False
+
+def run_classy_evaluation(params: dict, cleanup: bool = True):
+    """Centralized helper for direct classy.Class() calls (audit improvement: avoids duplication, ensures cleanup)."""
+    try:
+        import classy
+        c = classy.Class()
+        c.set(params)
+        c.compute()
+        result = {
+            "background": c.get_background() if 'output' in params and 'mPk' in str(params.get('output', '')) else None,
+            "h": c.h() if hasattr(c, 'h') else None,
+            "Omega_m": c.Omega_m() if hasattr(c, 'Omega_m') else None,
+        }
+        if cleanup:
+            c.struct_cleanup()
+            c.empty()
+        return result
+    except Exception as e:
+        try:
+            if 'c' in locals():
+                c.struct_cleanup()
+                c.empty()
+        except:
+            pass
+        raise e
+
+def log_run_to_db(config_name: str, model_type: str, status: str, output_prefix: str = "", log_ev: float = None, chi2: float = None, notes: str = ""):
+    """Log/update run in SQLite for history across models (production feature)."""
+    try:
+        conn = sqlite3.connect(RUNS_DB)
+        c = conn.cursor()
+        now = time.time()
+        c.execute("SELECT id FROM runs WHERE config_name=? AND start_time > ? ORDER BY start_time DESC LIMIT 1", (config_name, now - 86400*7))
+        row = c.fetchone()
+        if row and status in ("running", "completed", "stopped", "failed"):
+            c.execute("UPDATE runs SET status=?, end_time=?, log_evidence=?, best_chi2=?, output_prefix=?, notes=? WHERE id=?",
+                      (status, now if status != "running" else None, log_ev, chi2, output_prefix, notes, row[0]))
+        else:
+            c.execute("INSERT INTO runs (config_name, model_type, start_time, status, output_prefix, log_evidence, best_chi2, notes) VALUES (?,?,?,?,?,?,?,?)",
+                      (config_name, model_type, now, status, output_prefix, log_ev, chi2, notes))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 # --- NEW: Detailed Health, Validation, Metrics, Backup/Restore ---
 
@@ -992,6 +1200,17 @@ async def validate_config(req: ConfigValidateRequest = Body(...), request: Reque
     nl = str(extra.get("non_linear") or extra.get("non linear", "")).strip().lower()
     if nl not in ("halofit", "hmcode"):
         warnings.append("No 'non_linear: halofit' (or hmcode) detected in theory.classy.extra_args. For accurate modeling of non-linear structure (weak lensing, small-scale BAO), strongly recommend adding it for production runs.")
+
+    # Expanded physics checks for production/general models
+    if 'Omega_k' in params:
+        try:
+            ok = float(params['Omega_k'].get('ref', 0) if isinstance(params['Omega_k'], dict) else params['Omega_k'])
+            if abs(ok) > 0.1:
+                warnings.append("Large curvature |Omega_k| > 0.1 may indicate non-flat model or prior issues.")
+        except:
+            pass
+    # Optional dry-run hint
+    warnings.append("For full validation, consider running with stop_at_error: true in extra_args or use Cobaya dry-run.")
 
     # Prior bounds checks + physical consistency
     physical_bounds = {
@@ -1212,12 +1431,20 @@ async def background_process_watcher():
                     state.current_status = "running"
                 else:
                     state.current_status = "completed" if state.running_process.returncode == 0 else "stopped"
+                    log_run_to_db(state.active_yaml_path or "", getattr(state, 'model_type', 'general'), state.current_status, state.active_output_prefix)
                     if state.current_status == "completed" and "lcdm" in (state.active_output_prefix or "").lower():
                         try:
                             auto_archive_lcdm()
                         except Exception as ex:
                             log_dashboard_error(f"Background auto-archiving LCDM completed run failed: {ex}")
                     state.running_process = None
+                    # Broadcast status change via WS for real-time clients
+                    try:
+                        current = await get_status()
+                        await manager.broadcast({"type": "status_update", "data": current})
+                        await send_notification("run_completed", {"status": state.current_status, "prefix": state.active_output_prefix})
+                    except Exception:
+                        pass
         except Exception as e:
             try:
                 log_dashboard_error(f"Error in background_process_watcher: {e}")
@@ -1532,6 +1759,56 @@ def find_lcdm_scores():
             chi2 = fit_details["total"]
             
     return logz, chi2
+
+@app.get("/api/settings")
+async def get_settings():
+    """Runtime settings for UI settings panel (production)."""
+    return {
+        "status": "success",
+        "settings": {
+            "DASHBOARD_USER": os.environ.get("DASHBOARD_USER", "admin"),
+            "DASHBOARD_WORKSPACE_ROOT": os.environ.get("DASHBOARD_WORKSPACE_ROOT", str(Path.cwd())),
+            "has_webhook": bool(os.environ.get("DASHBOARD_WEBHOOK_URL")),
+            "log_level": "INFO",
+        },
+        "note": "Some require restart. Use env vars for persistence."
+    }
+
+@app.post("/api/settings")
+async def update_settings(data: dict = Body(...)):
+    """Update some runtime settings (limited for security)."""
+    if "DASHBOARD_WORKSPACE_ROOT" in data:
+        os.environ["DASHBOARD_WORKSPACE_ROOT"] = data["DASHBOARD_WORKSPACE_ROOT"]
+    return {"status": "success"}
+
+@app.get("/api/supported_models")
+async def supported_models():
+    """Info for accommodating other models (production/general use)."""
+    return {
+        "status": "success",
+        "supported": ["lcdm", "wcdm", "prtoe", "general"],
+        "notes": "Dashboard works for any Cobaya+CLASS yaml. PRTOE features (playground, mu plots) auto-detected via use_prtoe or prtoe_* params. Use extra_args in requests for custom extensions. Set non_linear in config for Pk models.",
+        "general_tips": "For new models, add params to yaml; dashboard will treat as 'general' for curves. Use /validate_config first."
+    }
+
+@app.websocket("/ws/status")
+async def websocket_status(websocket: WebSocket):
+    """WebSocket for real-time status updates (production UX: reduces polling, live feel for long runs)."""
+    await manager.connect(websocket)
+    try:
+        # Send initial status
+        # Note: auth is via middleware/cookie for WS in production; for simplicity here we assume prior auth or add token param
+        initial_status = await get_status()  # reuse but careful with async
+        await websocket.send_json({"type": "status", "data": initial_status})
+        while True:
+            # Keep alive or listen for client messages (e.g. subscribe)
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception:
+        manager.disconnect(websocket)
 
 @app.get("/api/status")
 async def get_status():
@@ -2186,28 +2463,36 @@ async def get_status():
         state.cosmo_curves_cache = compute_cosmo_curves({})
     stats_data["cosmo_curves"] = state.cosmo_curves_cache
 
-    # Robust LCDM detection logic
-    is_lcdm = False
-    if state.active_yaml_path:
+    # General model type detection (supports PRTOE, wCDM, LCDM, general for other models)
+    model_type = getattr(state, 'model_type', None)
+    if not model_type and state.active_yaml_path:
         try:
             p = Path(state.active_yaml_path)
             if p.exists():
                 with open(p, 'r') as f:
                     cfg = yaml.safe_load(f)
-                classy_args = cfg.get('theory', {}).get('classy', {}).get('extra_args', {})
-                use_prtoe = classy_args.get('use_prtoe', 'no')
+                theory = cfg.get('theory', {}).get('classy', {}).get('extra_args', {})
                 params = cfg.get('params', {})
-                has_prtoe_params = any(pt in params for pt in ['delta_prtoe', 'xi_prtoe', 'log_beta_prtoe', 'zeta_prtoe'])
-                if use_prtoe == 'no' or not has_prtoe_params:
-                    is_lcdm = True
-            elif "lcdm" in state.active_yaml_path.lower():
-                is_lcdm = True
+                prtoe_keys = ['delta_prtoe', 'xi_prtoe', 'log_beta_prtoe', 'zeta_prtoe']
+                if theory.get('use_prtoe') == 'yes' or any(pt in params for pt in prtoe_keys):
+                    model_type = "prtoe"
+                elif 'w0_fld' in params or 'wa_fld' in params:
+                    model_type = "wcdm"
+                elif "lcdm" in str(p).lower() or not any(k in params for k in ['w0_fld', 'delta_prtoe', 'xi_prtoe']):
+                    model_type = "lcdm"
+                else:
+                    model_type = "general"
+            else:
+                model_type = "general"
         except Exception:
-            pass
+            model_type = "general"
     elif state.active_output_prefix and "lcdm" in state.active_output_prefix.lower():
-        is_lcdm = True
+        model_type = "lcdm"
+    if not model_type:
+        model_type = "general"
         
-    stats_data["is_lcdm"] = is_lcdm
+    stats_data["model_type"] = model_type
+    stats_data["is_lcdm"] = model_type == "lcdm"  # backward compat
 
     return stats_data
 
@@ -2325,7 +2610,8 @@ async def upload_config(file: UploadFile = File(...), request: Request = None):
     try:
         with open(upload_path, 'wb') as f:
             f.write(contents)
-        return {"filename": file.filename, "message": "Configuration uploaded successfully."}
+        ensure_halofit_in_config(upload_path)
+        return {"filename": file.filename, "message": "Configuration uploaded successfully (halofit ensured)."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not save uploaded file: {e}")
 
@@ -2369,6 +2655,9 @@ async def start_run(config: RunConfig, request: Request = None):
     if not config_file.exists():
         raise HTTPException(status_code=404, detail=f"Configuration file '{config.config_name}' not found.")
 
+    # Ensure halofit for this run (idempotent, adds the key if missing)
+    ensure_halofit_in_config(config_file)
+
     # Save a copy of this run configuration as "last_run.yaml" in templates
     templates_dir = Path("templates")
     templates_dir.mkdir(parents=True, exist_ok=True)
@@ -2377,6 +2666,16 @@ async def start_run(config: RunConfig, request: Request = None):
         ensure_halofit_in_config(templates_dir / "last_run.yaml")
     except Exception as e:
         log_dashboard_error(f"Warning: Could not save last run template: {e}", console=True)
+
+    # Log the effective non_linear setting (helps debug hangs at init / 0 dead points)
+    try:
+        with open(config_file, 'r') as f:
+            cfg = yaml.safe_load(f) or {}
+        theory = cfg.get('theory', {}).get('classy', {}).get('extra_args', {}) or {}
+        nl = theory.get('non_linear') or theory.get('non linear', 'none (default)')
+        log_dashboard_error(f"[START] Using non_linear={nl} for CLASS (halofit enforced for PRTOE compatibility).", console=True)
+    except Exception:
+        log_dashboard_error("[START] Could not inspect non_linear in config.", console=True)
 
     # Auto-rebuild logic (no shell=True: env vars passed explicitly)
     if config.auto_rebuild:
@@ -2478,6 +2777,7 @@ async def start_run(config: RunConfig, request: Request = None):
     try:
         state.current_status = "running"
         state.run_start_time = time.time()
+        log_run_to_db(str(config_file), getattr(state, 'model_type', 'general'), "running", state.active_output_prefix)
         log_fd = open(log_file_path, "ab")
         state.running_process = subprocess.Popen(
             cobaya_cmd,
@@ -2990,13 +3290,19 @@ class RecoverSamplerRequest(BaseModel):
     sampler_mode: Optional[str] = None
 
 class PlaygroundRequest(BaseModel):
+    # PRTOE specific (optional for other models)
     delta_prtoe: float = 0.2
     xi_prtoe: float = 1e-7
     zeta_prtoe: float = 0.1
     beta_prtoe: float = 1e-6
+    # General
     omega_b: float = 0.0224
     omega_cdm: float = 0.120
     H0: float = 67.4
+    # For wCDM/general
+    w0_fld: float = -1.0
+    wa_fld: float = 0.0
+    extra_args: dict = {}  # for other models: e.g. {"use_mg": "yes", ...}
 
 class EvalParamsRequest(BaseModel):
     params: dict
@@ -3732,7 +4038,9 @@ async def compare_models():
 
 @app.post("/api/playground_curves")
 async def playground_curves(req: PlaygroundRequest):
-    """Calculates custom expansion ratio H(z)/H_LCDM(z), w(z), and mu(z) in real-time based on slider settings."""
+    """Calculates custom expansion ratio H(z)/H_LCDM(z), w(z), and mu(z) in real-time based on slider settings.
+    Supports PRTOE (default), wCDM (via w0/wa), and general via extra_args dict for other models (e.g. MG, neutrinos, etc.).
+    Production-ready for arbitrary CLASS extensions."""
     import numpy as np
     try:
         import classy
@@ -3769,64 +4077,84 @@ async def playground_curves(req: PlaygroundRequest):
         except Exception: pass
         raise HTTPException(status_code=500, detail=f"CLASS failed to evaluate baseline: {e}")
 
-    c_prtoe = classy.Class()
-    prtoe_params = {
+    c_model = classy.Class()
+    model_params = {
         'omega_b': req.omega_b,
         'omega_cdm': req.omega_cdm,
         'H0': req.H0,
         'output': 'mPk',
-        'use_prtoe': 'yes',
-        'xi_prtoe': req.xi_prtoe,
-        'delta_prtoe': req.delta_prtoe,
-        'zeta_prtoe': req.zeta_prtoe,
-        'beta_prtoe': req.beta_prtoe,
-        'V0_prtoe': 0.68,
-        'm_prtoe': 1e-20,
-        'lambda_prtoe': 0.1,
         'non_linear': 'halofit'
     }
+    if req.extra_args:
+        model_params.update(req.extra_args)
+    else:
+        model_params.update({
+            'use_prtoe': 'yes' if req.delta_prtoe != 0.2 or req.xi_prtoe != 1e-7 else 'no',
+            'xi_prtoe': req.xi_prtoe,
+            'delta_prtoe': req.delta_prtoe,
+            'zeta_prtoe': req.zeta_prtoe,
+            'beta_prtoe': req.beta_prtoe,
+            'V0_prtoe': 0.68,
+            'm_prtoe': 1e-20,
+            'lambda_prtoe': 0.1
+        })
+        if req.w0_fld != -1.0 or req.wa_fld != 0.0:
+            model_params['w0_fld'] = req.w0_fld
+            model_params['wa_fld'] = req.wa_fld
+            model_params['use_prtoe'] = 'no'
     
     w_sample = []
     mu_sample = []
     H_ratio = []
     
     try:
-        c_prtoe.set(prtoe_params)
-        c_prtoe.compute()
-        bg_prtoe = c_prtoe.get_background()
-        z_bg_prtoe = np.array(bg_prtoe['z'])
-        H_bg_prtoe = np.array(bg_prtoe['H [1/Mpc]'])
-        sort_idx = np.argsort(z_bg_prtoe)
-        H_prtoe_sample = np.interp(z_sample, z_bg_prtoe[sort_idx], H_bg_prtoe[sort_idx])
+        c_model.set(model_params)
+        c_model.compute()
+        bg_model = c_model.get_background()
+        z_bg_model = np.array(bg_model['z'])
+        H_bg_model = np.array(bg_model['H [1/Mpc]'])
+        sort_idx = np.argsort(z_bg_model)
+        H_model_sample = np.interp(z_sample, z_bg_model[sort_idx], H_bg_model[sort_idx])
         
-        H_ratio = (H_prtoe_sample / H_lcdm_sample).tolist()
+        H_ratio = (H_model_sample / H_lcdm_sample).tolist()
         
-        if '(.)rho_scf' in bg_prtoe and '(.)p_scf' in bg_prtoe:
-            rho_scf = np.array(bg_prtoe['(.)rho_scf'])
-            p_scf = np.array(bg_prtoe['(.)p_scf'])
+        if '(.)rho_scf' in bg_model and '(.)p_scf' in bg_model:
+            rho_scf = np.array(bg_model['(.)rho_scf'])
+            p_scf = np.array(bg_model['(.)p_scf'])
             w_scf = np.where(rho_scf > 0, p_scf / rho_scf, -1.0)
-            w_sample = np.interp(z_sample, z_bg_prtoe[sort_idx], w_scf[sort_idx]).tolist()
+            w_sample = np.interp(z_sample, z_bg_model[sort_idx], w_scf[sort_idx]).tolist()
             
-            if 'phi_scf' in bg_prtoe:
-                phi_scf = np.array(bg_prtoe['phi_scf'])
-                phi_interp = np.interp(z_sample, z_bg_prtoe[sort_idx], phi_scf[sort_idx])
+            if 'phi_scf' in bg_model:
+                phi_scf = np.array(bg_model['phi_scf'])
+                phi_interp = np.interp(z_sample, z_bg_model[sort_idx], phi_scf[sort_idx])
                 xi_eff = req.xi_prtoe / (1.0 + req.zeta_prtoe * phi_interp**2)
                 mu_val = 1.0 / (1.0 + xi_eff * phi_interp)
                 mu_sample = mu_val.tolist()
             else:
                 mu_sample = [1.0] * len(z_sample)
+        elif model_params.get('w0_fld') is not None or '(.)p_fld' in bg_model:
+            w0 = model_params.get('w0_fld', -1.0)
+            wa = model_params.get('wa_fld', 0.0)
+            if '(.)p_fld' in bg_model and '(.)rho_fld' in bg_model:
+                p_fld = np.array(bg_model['(.)p_fld'])
+                rho_fld = np.array(bg_model['(.)rho_fld'])
+                w_fld = np.where(rho_fld > 0, p_fld / rho_fld, w0)
+                w_sample = np.interp(z_sample, z_bg_model[sort_idx], w_fld[sort_idx]).tolist()
+            else:
+                w_sample = [w0 + wa * (1 - 1.0/(1 + z)) for z in z_sample]
+            mu_sample = [1.0] * len(z_sample)
         else:
             w_sample = [-1.0] * len(z_sample)
             mu_sample = [1.0] * len(z_sample)
             
-        c_prtoe.struct_cleanup()
-        c_prtoe.empty()
+        c_model.struct_cleanup()
+        c_model.empty()
     except Exception as e:
         try:
-            c_prtoe.struct_cleanup()
-            c_prtoe.empty()
+            c_model.struct_cleanup()
+            c_model.empty()
         except Exception: pass
-        raise HTTPException(status_code=500, detail=f"CLASS failed to evaluate PRTOE: {e}")
+        raise HTTPException(status_code=500, detail=f"CLASS failed to evaluate model: {e}")
         
     phi_sample = []
     if 'phi_interp' in locals():
@@ -3838,7 +4166,8 @@ async def playground_curves(req: PlaygroundRequest):
         "w": w_sample,
         "mu": mu_sample,
         "phi": phi_sample,
-        "H_ratio": H_ratio
+        "H_ratio": H_ratio,
+        "model_type": "prtoe" if model_params.get('use_prtoe') == 'yes' else ("wcdm" if model_params.get('w0_fld') else "general")
     }
 
 @app.post("/api/eval_params")
@@ -5142,6 +5471,130 @@ async def list_runs():
         "runs": runs
     }
 
+@app.get("/api/runs/history")
+async def runs_history(limit: int = 50, model_type: str = None):
+    """Query run history from DB (production feature for many models/runs). Supports filtering by model_type."""
+    conn = sqlite3.connect(RUNS_DB)
+    c = conn.cursor()
+    query = "SELECT config_name, model_type, start_time, end_time, status, log_evidence, best_chi2, output_prefix, notes FROM runs"
+    params = []
+    if model_type:
+        query += " WHERE model_type=?"
+        params.append(model_type)
+    query += " ORDER BY start_time DESC LIMIT ?"
+    params.append(limit)
+    c.execute(query, params)
+    rows = c.fetchall()
+    conn.close()
+    history = []
+    for r in rows:
+        history.append({
+            "config_name": r[0],
+            "model_type": r[1],
+            "start_time": r[2],
+            "end_time": r[3],
+            "status": r[4],
+            "log_evidence": r[5],
+            "best_chi2": r[6],
+            "output_prefix": r[7],
+            "notes": r[8]
+        })
+    return {"status": "success", "history": history, "count": len(history)}
+
+# In-UI YAML editor support (production: live editing + validate)
+@app.get("/api/config/current")
+async def get_current_config(config_name: str = "uploaded_config.yaml"):
+    """Get current config content for in-UI editor."""
+    p = Path(config_name)
+    if not p.exists():
+        p = Path("uploaded_config.yaml")
+    if not p.exists():
+        raise HTTPException(404, "No config found")
+    return {"status": "success", "content": p.read_text(), "path": str(p)}
+
+@app.post("/api/config/save")
+async def save_config_inline(data: dict = Body(...)):
+    """Save edited config from UI editor, with auto halofit."""
+    path = Path(data.get("path", "uploaded_config.yaml"))
+    content = data.get("content", "")
+    path.write_text(content)
+    ensure_halofit_in_config(path)
+    return {"status": "success", "message": "Saved and halofit ensured"}
+
+    """One-click full scientific report (production feature for papers/reproducibility). Returns self-contained HTML with current data, diagnostics summary, provenance."""
+    try:
+        # Collect key data
+        status_data = await get_status()
+        baselines = await get_baselines()
+        history = (await runs_history(limit=5)).get("history", []) if 'runs_history' in globals() else []
+        provenance = await get_provenance_ledger(config_name)
+
+        # Build simple HTML report
+        html = f"""
+<!DOCTYPE html>
+<html>
+<head><title>CosmicDashboard Report - {config_name}</title>
+<style>body {{font-family: system-ui, sans-serif; background: #0a0a0f; color: #eee;}} .panel {{background: #1a1a24; padding: 15px; margin: 10px; border-radius: 8px;}} h1,h2 {{color: #00d2d3;}} table {{border-collapse: collapse;}} th,td {{border: 1px solid #333; padding: 5px;}}</style>
+</head>
+<body>
+<h1>CosmicDashboard Scientific Report</h1>
+<p>Generated: {time.strftime('%Y-%m-%d %H:%M:%S')} | Config: {config_name}</p>
+
+<div class="panel">
+<h2>Current Status</h2>
+<pre>{json.dumps(status_data, indent=2, default=str)}</pre>
+</div>
+
+<div class="panel">
+<h2>Baselines</h2>
+<pre>{json.dumps(baselines, indent=2, default=str)}</pre>
+</div>
+
+<div class="panel">
+<h2>Recent Run History</h2>
+<pre>{json.dumps(history, indent=2, default=str)}</pre>
+</div>
+
+<div class="panel">
+<h2>Provenance Ledger</h2>
+<pre>{json.dumps(provenance, indent=2, default=str)}</pre>
+</div>
+
+<p><em>Embed plots manually from /api/live_plot, /api/corner_plot etc. Full GetDist analysis recommended for publication.</em></p>
+<p>Reproduce with: the provenance data above + original config.</p>
+</body>
+</html>
+"""
+        return FastAPIResponse(content=html, media_type="text/html")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Report generation failed: {e}")
+
+# Simple notification system (production: webhooks, events on complete/watchdog)
+WEBHOOK_URL = os.environ.get("DASHBOARD_WEBHOOK_URL")
+
+async def send_notification(event: str, data: dict):
+    """Send event notification. Supports webhook if set, else log."""
+    payload = {"event": event, "timestamp": time.time(), "data": data}
+    log_dashboard_error(f"NOTIFICATION: {event} - {json.dumps(data, default=str)[:200]}", console=False)
+    if WEBHOOK_URL:
+        try:
+            import httpx  # optional, fallback to requests if available
+            async with httpx.AsyncClient() as client:
+                await client.post(WEBHOOK_URL, json=payload, timeout=5)
+        except Exception:
+            try:
+                import requests
+                requests.post(WEBHOOK_URL, json=payload, timeout=5)
+            except Exception as e:
+                log_dashboard_error(f"Webhook failed: {e}")
+    # For browser notifications, frontend can poll /api/dashboard_errors or use WS
+
+@app.post("/api/notify")
+async def manual_notify(event: str = "custom", data: dict = Body(...)):
+    """Manual notification trigger for custom events."""
+    await send_notification(event, data)
+    return {"status": "success"}
+
 class CompareRunsRequest(BaseModel):
     run_a: str
     run_b: str
@@ -5771,6 +6224,7 @@ async def api_login(req: LoginRequest, response: FastAPIResponse):
         "user": req.username,
         "exp": time.time() + duration
     }
+    _save_json_store(SESSIONS_FILE, DASHBOARD_SESSIONS)
     response.set_cookie(
         key="dashboard_session",
         value=token,
@@ -5788,6 +6242,7 @@ async def api_logout(request: Request, response: FastAPIResponse):
     token = request.cookies.get("dashboard_session")
     if token and token in DASHBOARD_SESSIONS:
         del DASHBOARD_SESSIONS[token]
+        _save_json_store(SESSIONS_FILE, DASHBOARD_SESSIONS)
     response.delete_cookie("dashboard_session")
     return {"status": "success", "message": "Logged out"}
 
@@ -5962,6 +6417,10 @@ async def config_restore(req: ConfigRestoreRequest, request: Request = None):
 # --- Serve Dashboard UI ---
 if Path("dashboard").exists():
     app.mount("/", StaticFiles(directory="dashboard", html=True), name="dashboard")
+
+# Serve screenshots folder for exact UI mockups/previews (used in drop box and docs)
+if Path("screenshots").exists():
+    app.mount("/screenshots", StaticFiles(directory="screenshots"), name="screenshots")
 
 # --- Main execution block ---
 if __name__ == "__main__":

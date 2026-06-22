@@ -40,12 +40,15 @@ dashboard/history/
 __pycache__/
 *.egg
 prtoe_class/
+# Duplicate tree from packaging; remove if not needed for examples
 chains/dashboard_backups/
 chains/*.yaml
 chains/*.txt
 chains/*.resume
 chains/*.stats
 *.png
+!screenshots/*.png
+!screenshots/*.mp4
 scripts/__pycache__/
 *.dat
 stXk34nG

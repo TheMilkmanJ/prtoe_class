@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'cosmic-dashboard'
+    static_configs:
+      - targets: ['cosmic-dashboard:8000']
+    metrics_path: '/api/metrics'
+    basic_auth:
+      username: 'admin'  # match DASHBOARD_USER
+      password: 'CHANGE_ME'  # set via env or file
+    # For production, use file_sd or external auth proxy

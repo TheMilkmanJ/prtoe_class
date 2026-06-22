@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  cosmic-dashboard:
+    build:
+      context: .
+      args:
+        DASHBOARD_USER: ${DASHBOARD_USER:-admin}
+        DASHBOARD_PASS: ${DASHBOARD_PASS}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./chains:/app/chains
+    environment:
+      - DASHBOARD_USER=${DASHBOARD_USER:-admin}
+      - DASHBOARD_PASS=${DASHBOARD_PASS}
+      - DASHBOARD_WORKSPACE_ROOT=/app
+      - DASHBOARD_WEBHOOK_URL=${DASHBOARD_WEBHOOK_URL:-}
+      # Add others as needed: DASHBOARD_PYTHON etc.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-u", "${DASHBOARD_USER:-admin}:${DASHBOARD_PASS}", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+  # Optional: Prometheus for /api/metrics scraping (production monitoring)
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    depends_on:
+      - cosmic-dashboard
+    profiles:
+      - monitoring
+
+# To run with monitoring: DASHBOARD_PASS=xxx docker-compose --profile monitoring up
+# Prometheus config example in prometheus.yml (add job for http://cosmic-dashboard:8000/api/metrics with basic auth)
