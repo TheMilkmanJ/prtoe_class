@@ -2,9 +2,10 @@ import uvicorn
 from fastapi import FastAPI, UploadFile, File, HTTPException, Body, BackgroundTasks, Depends, status, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response as FastAPIResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 import asyncio
 import subprocess
 import os
@@ -21,6 +22,7 @@ import datetime
 from typing import List, Optional
 import math
 import secrets
+import glob
 import sqlite3
 import collections
 from functools import lru_cache
@@ -31,6 +33,49 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parent))
 
 ERROR_LOG_PATH = Path("chains/dashboard_errors.log")
+
+# Limit OpenMP/MKL threads to 1 to prevent CLASS from saturating all CPU cores
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+
+# --- Suppress C-level stderr (PRTOE fprintf debug spam) ---
+# IMPORTANT: We do NOT silence stderr at module load time. Doing so would swallow
+# all Cobaya/CLASS/MPI launch errors before they can be logged, making debugging
+# impossible. Instead, call _suppress_stderr_for_run() once Cobaya has actually
+# started (i.e. after the first successful poll() confirms the process is alive).
+# The _suppress_c_stderr() context manager below is still available for targeted
+# suppression around direct Class().compute() calls.
+def _suppress_stderr_for_run():
+    """Silence C-level stderr after a run is confirmed alive. Call post-launch only."""
+    try:
+        _devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(_devnull_fd, 2)
+        os.close(_devnull_fd)
+        sys.stderr = open(os.devnull, "w")
+    except Exception:
+        pass
+
+
+
+@contextmanager
+def _suppress_c_stderr():
+    """Temporarily redirect stderr to /dev/null for direct Class().compute() calls.
+    Saves and restores both fd 2 and Python's sys.stderr."""
+    old_fd = os.dup(2)
+    old_stderr = sys.stderr
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, 2)
+        os.close(devnull)
+        sys.stderr = open(os.devnull, "w")
+        yield
+    finally:
+        os.dup2(old_fd, 2)
+        os.close(old_fd)
+        sys.stderr = old_stderr
 
 # Production logging setup with rotation - MUST be early so that top-level
 # password generation / error messages (before any app code) can use log_dashboard_error.
@@ -79,7 +124,28 @@ def log_dashboard_error(msg: str, console: bool = True, level: str = "info"):
 RUNS_DB = Path("chains/dashboard_runs.db")
 
 DEFAULT_CONDA_ROOT = os.path.expanduser("~/miniconda3")
-DEFAULT_COBAYA_ENV = "pgtoe_gold"
+DEFAULT_COBAYA_ENV = "prtoe_gold"
+
+
+def _clean_ld_library_path(env: dict) -> None:
+    """Remove conda lib directories from LD_LIBRARY_PATH in-place.
+
+    Preprending conda lib/ causes clik (Planck likelihood) to SIGSEGV after loading.
+    The conda Python binary already has the correct rpath. Non-conda entries (e.g.
+    CAMB library paths) are preserved.
+    """
+    current = env.get("LD_LIBRARY_PATH", "")
+    if not current:
+        return
+    parts = current.split(os.pathsep)
+    cleaned = [p for p in parts if not re.search(
+        r"/miniconda3(?:/envs/[^/]+)?/lib", p
+    )]
+    if len(cleaned) != len(parts):
+        if cleaned:
+            env["LD_LIBRARY_PATH"] = os.pathsep.join(cleaned)
+        else:
+            env.pop("LD_LIBRARY_PATH", None)
 
 
 def _conda_prefix_from_python(python_exe: str) -> Optional[str]:
@@ -140,25 +206,30 @@ def resolve_cobaya_runtime(engine: Optional[dict] = None) -> tuple:
 
     PolyChord segfaults if mpirun (system OpenMPI) initializes MPI while libchord.so
     was linked against a different MPI in the Cobaya conda env.
+
+    NOTE: LD_LIBRARY_PATH must NOT be overridden. Preprending conda lib/ breaks clik
+    (Planck likelihood), causing SIGSEGV after `clik module loaded successfully`.
+    The conda Python binary already embeds the correct rpath.
     """
     env = os.environ.copy()
     engine = engine or {}
 
     python_exe = os.environ.get("DASHBOARD_PYTHON") or engine.get("python_exe")
-    conda_prefix = os.environ.get("CONDA_PREFIX", "")
 
     if not python_exe:
         pgtoe_py = os.path.join(DEFAULT_CONDA_ROOT, "envs", DEFAULT_COBAYA_ENV, "bin", "python3")
         if os.path.isfile(pgtoe_py):
             python_exe = pgtoe_py
-        elif conda_prefix:
-            cand = os.path.join(conda_prefix, "bin", "python3")
-            python_exe = cand if os.path.isfile(cand) else (shutil.which("python3") or "python3")
         else:
-            python_exe = shutil.which("python3") or "python3"
+            conda_prefix_env = os.environ.get("CONDA_PREFIX", "")
+            if conda_prefix_env:
+                cand = os.path.join(conda_prefix_env, "bin", "python3")
+                python_exe = cand if os.path.isfile(cand) else (shutil.which("python3") or "python3")
+            else:
+                python_exe = shutil.which("python3") or "python3"
 
-    if not conda_prefix:
-        conda_prefix = _conda_prefix_from_python(python_exe) or ""
+    # Infer the correct conda prefix from the actual python we'll run
+    conda_prefix = _conda_prefix_from_python(python_exe) or os.environ.get("CONDA_PREFIX", "")
 
     mpirun_exe = os.environ.get("DASHBOARD_MPIRUN")
     if not mpirun_exe and conda_prefix:
@@ -168,13 +239,8 @@ def resolve_cobaya_runtime(engine: Optional[dict] = None) -> tuple:
     if not mpirun_exe:
         mpirun_exe = shutil.which("mpirun") or "/usr/bin/mpirun"
 
-    if conda_prefix and os.path.isdir(os.path.join(conda_prefix, "lib")):
-        lib_dir = os.path.join(conda_prefix, "lib")
+    if conda_prefix and os.path.isdir(os.path.join(conda_prefix, "bin")):
         bin_dir = os.path.join(conda_prefix, "bin")
-        # Ensure conda lib is FIRST in LD_LIBRARY_PATH to prevent system MPI conflicts
-        existing_ld = env.get("LD_LIBRARY_PATH", "")
-        env["LD_LIBRARY_PATH"] = lib_dir + (os.pathsep + existing_ld if existing_ld else "")
-        # Ensure conda bin is FIRST in PATH to use correct mpirun
         existing_path = env.get("PATH", "")
         env["PATH"] = bin_dir + os.pathsep + existing_path
         env["CONDA_PREFIX"] = conda_prefix
@@ -231,7 +297,7 @@ def detect_run_crash_in_log(log_path) -> Optional[str]:
             return "Run timed out. Consider increasing timeout or reducing computational load."
 
         # Check for memory errors
-        if "out of memory" in tail.lower() or "memory" in tail.lower() and "error" in tail.lower():
+        if "out of memory" in tail.lower() or ("memory" in tail.lower() and "error" in tail.lower()):
             return "Out of memory error. Reduce cores or memory requirements."
 
         # Check for configuration errors
@@ -405,7 +471,10 @@ def anakin_skywalker_directive():
         result = subprocess.run(['ps', 'aux'], capture_output=True, text=True)
         lines = result.stdout.split('\n')
 
-        current_user = os.environ.get('USER', 'themilkmanj')
+        current_user = os.environ.get('USER') or os.environ.get('LOGNAME') or os.environ.get('USERNAME')
+        if not current_user:
+            log_dashboard_error("[ANAKIN SKYWALKER DIRECTIVE] Could not determine current user; skipping orphan scan.", console=True)
+            return 0
 
         for line in lines[1:]:  # Skip header
             if not line.strip():
@@ -460,7 +529,7 @@ def anakin_skywalker_directive():
                 except:
                     pass
         else:
-            log_dashboard_error("[ANAKIN SKYWALKER DIRECTIVE] Temple scan complete. No younglings found. The temple is clean.", console=True)
+            log_dashboard_error("[ANAKIN SKYWALKER DIRECTIVE] Temple scan complete. No younglings found. The temple is clear.", console=True)
 
         return killed_count
 
@@ -545,10 +614,20 @@ async def lifespan(app: FastAPI):
     # Auto-install PolyChord if missing (truly non-blocking, runs in background task)
     asyncio.create_task(asyncio.to_thread(ensure_polychord_installed))
 
+    # Ensure classy build directory is importable
+    try:
+        await loop.run_in_executor(None, ensure_classy_import_layout)
+    except Exception as e:
+        log_dashboard_error(f"[startup] ensure_classy_import_layout failed: {e}")
+
     try:
         await loop.run_in_executor(None, system_metrics.prime_sync)
     except Exception as e:
         log_dashboard_error(f"System metrics prime failed at startup: {e}")
+
+    # Pre-compute cosmo curves in background (avoids blocking /api/status on first call)
+    asyncio.create_task(_warm_cosmo_curves())
+
     watcher_task = asyncio.create_task(background_process_watcher())
     metrics_task = asyncio.create_task(system_metrics_watcher())
     log_dashboard_error("CosmicDashboard lifespan startup: background watcher launched.", console=False)
@@ -737,6 +816,10 @@ else:
     ]
 
 app.add_middleware(
+    GZipMiddleware,
+    minimum_size=1000,
+)
+app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=True,
@@ -769,7 +852,7 @@ async def custom_http_exception_handler(request: Request, exc: HTTPException):
 # --- Pydantic Models for API requests ---
 class RunConfig(BaseModel):
     config_name: str
-    cores: int = psutil.cpu_count(logical=False) or 4
+    cores: int = min(psutil.cpu_count(logical=False) or 4, 4)
     auto_rebuild: bool = True
     force_overwrite: Optional[bool] = None
 
@@ -1063,6 +1146,15 @@ def _ensure_default_class_engine():
         }
         CLASS_ENGINES_DATA["active_id"] = default_id
         _save_json_store(CLASS_ENGINES_FILE, CLASS_ENGINES_DATA)
+        # Warn the user: cwd is almost certainly not a CLASS build tree. If classy
+        # is not found under this path, every run will fail with an ImportError.
+        # The user should register the correct CLASS build via the Engines panel.
+        log_dashboard_error(
+            f"[ENGINE] No CLASS engine registered. Defaulting to cwd='{cwd}'. "
+            "If CLASS is installed elsewhere, add the correct path via the Engines panel "
+            "or set the DASHBOARD_WORKSPACE_ROOT environment variable.",
+            console=True, level="warning"
+        )
     elif CLASS_ENGINES_DATA.get("active_id") not in engines:
         # pick first if active is invalid
         CLASS_ENGINES_DATA["active_id"] = next(iter(engines.keys()))
@@ -1648,6 +1740,7 @@ def compute_cosmo_curves(best_fit_params, engine: dict | None = None):
             w_scf = np.where(rho_scf > 0, p_scf / rho_scf, -1.0)
             w_sample = np.interp(z_sample, z_bg[sort_idx], w_scf[sort_idx]).tolist()
 
+            phi_interp = None  # default so the name always exists in scope
             if 'phi_scf' in bg:
                 phi_scf = np.array(bg['phi_scf'])
                 phi_interp = np.interp(z_sample, z_bg[sort_idx], phi_scf[sort_idx])
@@ -1704,7 +1797,7 @@ def compute_cosmo_curves(best_fit_params, engine: dict | None = None):
         c.empty()
 
         phi_sample = []
-        if '(.)rho_scf' in bg and '(.)p_scf' in bg and 'phi_scf' in bg:
+        if '(.)rho_scf' in bg and '(.)p_scf' in bg and 'phi_scf' in bg and phi_interp is not None:
             phi_sample = phi_interp.tolist()
 
         return {
@@ -1738,6 +1831,16 @@ def compute_cosmo_curves(best_fit_params, engine: dict | None = None):
             'success': False,
             'error': str(e)
         }
+
+async def _warm_cosmo_curves():
+    """Pre-compute cosmo curves in the background so /api/status doesn't block."""
+    try:
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, lambda: compute_cosmo_curves({}))
+        state.cosmo_curves_cache = result
+        log_dashboard_error("[startup] Cosmo curves pre-computed.", console=False)
+    except Exception as e:
+        log_dashboard_error(f"[startup] Cosmo curves warm failed: {e}", console=True)
 
     # --- API Endpoints ---
 
@@ -1903,7 +2006,12 @@ def ensure_class_engine_in_config(cfg: dict):
     """Inject the active CLASS engine's source path into the Cobaya YAML dict (theory.classy.path).
     This lets the dashboard drive which patched CLASS (standard, PRTOE, custom MG/EFT, etc.) is used
     for a given sampler run. User YAMLs can still hardcode their own if they prefer.
-    Also normalizes PRTOE param names and guarantees base_path for CLASS data files (BBN etc).
+
+    NOTE: base_path is intentionally NOT injected here. Cobaya passes base_path as-is to CLASS
+    via extra_args, but when it resolves to None or an unexpected value it causes:
+      "could not open fA with name None/external/bbn/sBBN_*.dat"
+    normalize_prtoe_param_names() strips base_path from extra_args to prevent this. CLASS will
+    use its own internal path resolution when base_path is absent.
     """
     if isinstance(cfg, dict):
         normalize_prtoe_param_names(cfg)
@@ -1913,13 +2021,53 @@ def ensure_class_engine_in_config(cfg: dict):
     theory = cfg.setdefault("theory", {}).setdefault("classy", {})
     # Set/override the path for the active engine. This is the key for Cobaya to pick the right build.
     theory["path"] = engine["class_path"]
-    # Also ensure base_path points to the CLASS source tree so data files (external/bbn/sBBN_*.dat etc.)
-    # are found correctly. This fixes "could not open fA with name None/external/bbn/..." errors
-    # when using workspace/PRTOE engines (previously base_path null or wrong "python/" prefix).
-    extra = theory.setdefault("extra_args", {})
-    if not extra.get("base_path") or str(extra.get("base_path")).lower() in ("null", "none", ""):
-        extra["base_path"] = engine["class_path"]
+    # Do NOT add base_path to extra_args — normalize_prtoe_param_names already removed it.
     return True
+
+def ensure_classy_import_layout():
+    """Ensure the classy build directory has the right layout for Python imports.
+    Some versions of CLASS (especially PRTOE) build classy as a single .so next to
+    the Python/ subdir, but Python's import machinery expects the .so *inside* python/
+    or a proper package structure. This function symlinks back if needed.
+    """
+    engine = get_active_class_engine()
+    if not engine or not engine.get("class_path"):
+        return
+    class_path = engine["class_path"]
+    python_dir = os.path.join(class_path, "python")
+    so_files = glob.glob(os.path.join(class_path, "classy*.so"))
+    if not so_files:
+        return
+    for so in so_files:
+        name = os.path.basename(so)
+        target = os.path.join(python_dir, name)
+        if not os.path.exists(target):
+            try:
+                os.symlink(so, target)
+                log_dashboard_error(f"[classy-import] Symlinked {name} into python/ for import", console=True)
+            except OSError:
+                try:
+                    shutil.copy2(so, target)
+                    log_dashboard_error(f"[classy-import] Copied {name} into python/ for import", console=True)
+                except OSError as e:
+                    log_dashboard_error(f"[classy-import] Could not copy {name}: {e}", console=True)
+
+def get_classy_import_paths():
+    """Return a list of paths that need to be in sys.path for classy to be importable.
+    Returns paths in priority order (highest priority first).
+    """
+    engine = get_active_class_engine()
+    if not engine or not engine.get("class_path"):
+        return []
+    paths = []
+    py_dir = os.path.join(engine["class_path"], "python")
+    if os.path.isdir(py_dir):
+        paths.append(py_dir)
+    build_dir = os.path.join(engine["class_path"], "build")
+    if os.path.isdir(build_dir):
+        paths.append(build_dir)
+    paths.append(engine["class_path"])
+    return paths
 
 def get_classy_for_engine(engine: dict | None = None):
     """Return the classy module configured for a specific engine (or the active one).
@@ -1930,12 +2078,28 @@ def get_classy_for_engine(engine: dict | None = None):
     """
     if engine is None:
         engine = get_active_class_engine()
+    if not engine or not engine.get("class_path"):
+        raise ImportError("No active CLASS engine configured (class_path is empty)")
     orig_path = sys.path[:]
     try:
-        if engine and engine.get("class_path"):
-            py_dir = os.path.join(engine["class_path"], "python")
-            if os.path.isdir(py_dir) and py_dir not in sys.path:
-                sys.path.insert(0, py_dir)
+        added = []
+        # 1) python/ subdirectory (standard location)
+        py_dir = os.path.join(engine["class_path"], "python")
+        if os.path.isdir(py_dir) and py_dir not in sys.path:
+            sys.path.insert(0, py_dir)
+            added.append(py_dir)
+        # 2) build/lib.*/ subdirectory (setuptools build output)
+        build_root = os.path.join(engine["class_path"], "build")
+        if os.path.isdir(build_root):
+            for entry in sorted(os.listdir(build_root), reverse=True):
+                candidate = os.path.join(build_root, entry)
+                if os.path.isdir(candidate) and candidate not in sys.path:
+                    sys.path.insert(0, candidate)
+                    added.append(candidate)
+        # 3) workspace root itself (as fallback for egg-info based installs)
+        if engine["class_path"] not in sys.path:
+            sys.path.insert(0, engine["class_path"])
+            added.append(engine["class_path"])
         # Attempt to clear previous classy to allow swap (best-effort)
         for mod in list(sys.modules.keys()):
             if mod == "classy" or mod.startswith("classy."):
@@ -3676,8 +3840,9 @@ async def get_status():
                 state.cosmo_curves_cache = compute_cosmo_curves(raw_params)
                 state.last_computed_chi2 = best_chi2
     if state.cosmo_curves_cache is None:
-        state.cosmo_curves_cache = compute_cosmo_curves({})
-    stats_data["cosmo_curves"] = state.cosmo_curves_cache
+        stats_data["cosmo_curves"] = None
+    else:
+        stats_data["cosmo_curves"] = state.cosmo_curves_cache
 
     # General model type detection (supports PRTOE, wCDM, LCDM, general for other models)
     model_type = getattr(state, 'model_type', None)
@@ -3891,44 +4056,37 @@ async def start_run(config: RunConfig, request: Request = None):
     if not config_file.exists():
         raise HTTPException(status_code=404, detail=f"Configuration file '{config.config_name}' not found.")
 
-    # Ensure halofit for this run (idempotent, adds the key if missing)
-    ensure_halofit_in_config(config_file)
-
-    # Inject active CLASS engine path (allows swapping between standard CLASS, PRTOE-patched, custom MG/EFT etc.)
+    # Read the config once and reuse it for all pre-launch checks/mutations.
     try:
         with open(config_file, 'r') as f:
             run_cfg = yaml.safe_load(f) or {}
-        if ensure_class_engine_in_config(run_cfg):
-            with open(config_file, 'w') as f:
-                yaml.dump(run_cfg, f, default_flow_style=False, sort_keys=False)
-            log_dashboard_error(f"[CLASS ENGINE] Injected active engine path for this run: {get_active_class_engine().get('name') if get_active_class_engine() else 'N/A'}", console=True)
     except Exception as e:
-        log_dashboard_error(f"Warning: Could not inject CLASS engine path: {e}", console=True)
+        raise HTTPException(status_code=500, detail=f"Could not read config file: {e}")
 
-    # Save a copy of this run configuration as "last_run.yaml" in templates
+    # Idempotent pre-launch mutations — done in memory, written once below.
+    changed = False
+    theory_args = run_cfg.setdefault('theory', {}).setdefault('classy', {}).setdefault('extra_args', {})
+    if 'non_linear' not in theory_args and 'non linear' not in theory_args:
+        theory_args['non_linear'] = 'halofit'
+        changed = True
+    if ensure_class_engine_in_config(run_cfg):
+        changed = True
+    if changed:
+        with open(config_file, 'w') as f:
+            yaml.dump(run_cfg, f, default_flow_style=False, sort_keys=False)
+        log_dashboard_error(f"[CLASS ENGINE] Injected active engine path for this run: {get_active_class_engine().get('name') if get_active_class_engine() else 'N/A'}", console=True)
+
+    nl = run_cfg.get('theory', {}).get('classy', {}).get('extra_args', {}).get('non_linear') \
+        or run_cfg.get('theory', {}).get('classy', {}).get('extra_args', {}).get('non linear', 'none (default)')
+    log_dashboard_error(f"[START] Using non_linear={nl} for CLASS (halofit enforced for PRTOE compatibility).", console=True)
+
+    # Save a copy of this run configuration as "last_run.yaml" in templates (single write).
     templates_dir = Path("templates")
     templates_dir.mkdir(parents=True, exist_ok=True)
     try:
         shutil.copy2(config_file, templates_dir / "last_run.yaml")
-        ensure_halofit_in_config(templates_dir / "last_run.yaml")
-        # also ensure engine for the template copy
-        with open(templates_dir / "last_run.yaml", 'r') as f:
-            tcfg = yaml.safe_load(f) or {}
-        if ensure_class_engine_in_config(tcfg):
-            with open(templates_dir / "last_run.yaml", 'w') as f:
-                yaml.dump(tcfg, f, default_flow_style=False, sort_keys=False)
     except Exception as e:
         log_dashboard_error(f"Warning: Could not save last run template: {e}", console=True)
-
-    # Log the effective non_linear setting (helps debug hangs at init / 0 dead points)
-    try:
-        with open(config_file, 'r') as f:
-            cfg = yaml.safe_load(f) or {}
-        theory = cfg.get('theory', {}).get('classy', {}).get('extra_args', {}) or {}
-        nl = theory.get('non_linear') or theory.get('non linear', 'none (default)')
-        log_dashboard_error(f"[START] Using non_linear={nl} for CLASS (halofit enforced for PRTOE compatibility).", console=True)
-    except Exception:
-        log_dashboard_error("[START] Could not inspect non_linear in config.", console=True)
 
     # Auto-rebuild logic (no shell=True: env vars passed explicitly)
     if config.auto_rebuild:
@@ -4017,42 +4175,37 @@ async def start_run(config: RunConfig, request: Request = None):
     _run_env["NUMEXPR_NUM_THREADS"] = "1"
     _run_env["VECLIB_MAXIMUM_THREADS"] = "1"
 
-    # Build MPI command with compatibility for different MPI implementations
-    # OpenMPI supports --oversubscribe and --bind-to, but MPICH/Intel MPI don't
-    # Detect MPI type by checking mpirun version output
-    mpi_extra_args = []
-    try:
-        mpi_version_check = subprocess.run(
-            [mpirun_executable, "--version"],
-            capture_output=True,
-            text=True,
-            timeout=2
-        )
-        mpi_version_output = (mpi_version_check.stdout + mpi_version_check.stderr).lower()
+    # Strip conda lib dirs from LD_LIBRARY_PATH — they cause clik (Planck likelihood)
+    # to SIGSEGV after loading. The conda Python binary already has the correct rpath.
+    _clean_ld_library_path(_run_env)
 
-        # OpenMPI-specific flags (only add if OpenMPI is detected)
-        if "open mpi" in mpi_version_output or "openmpi" in mpi_version_output:
-            mpi_extra_args = ["--oversubscribe", "--bind-to", "none"]
-            log_dashboard_error("[START] Detected OpenMPI - using --oversubscribe and --bind-to none", console=True)
-        else:
-            log_dashboard_error(f"[START] Detected non-OpenMPI implementation - using basic mpirun flags", console=True)
-    except Exception as e:
-        log_dashboard_error(f"[START] Could not detect MPI type, using basic flags: {e}", console=True)
+    # Inject clik (Planck likelihood) paths so MPI workers can find it.
+    # clik installs into a non-standard location under cobaya_packages_clean and
+    # is not on the default Python or library search paths.
+    _clik_root = os.path.join(cobaya_packages_path, "code", "planck", "clik-main")
+    _clik_py = os.path.join(_clik_root, "lib", "python", "site-packages")
+    _clik_lib = os.path.join(_clik_root, "lib")
+    if os.path.isdir(_clik_py):
+        _cur_pp = _run_env.get("PYTHONPATH", "")
+        _run_env["PYTHONPATH"] = _clik_py + (os.pathsep + _cur_pp if _cur_pp else "")
+    if os.path.isdir(_clik_lib):
+        _cur_ld = _run_env.get("LD_LIBRARY_PATH", "")
+        _run_env["LD_LIBRARY_PATH"] = _clik_lib + (os.pathsep + _cur_ld if _cur_ld else "")
 
+    # --- Use --no-mpi to bypass MPICH segfault under WSL ---
+    # PolyChord and MPICH together crash with signal 11 on WSL2 kernel 6.6.87.
+    # Running in serial (--no-mpi) is safer and avoids the MPI process tree complexity.
     cobaya_cmd = [
-        mpirun_executable,
-        *mpi_extra_args,  # Add OpenMPI-specific flags only if detected
-        "-np", str(config.cores),
         python_executable, "-m", "cobaya", "run",
         str(config_file),
         "--packages-path", cobaya_packages_path,
         run_flag,
     ]
 
-    # Ensure MPI libraries are found before system libraries
-    if conda_prefix and os.path.isdir(os.path.join(conda_prefix, "lib")):
-        lib_dir = os.path.join(conda_prefix, "lib")
-        _run_env["LD_LIBRARY_PATH"] = lib_dir + (_run_env.get("LD_LIBRARY_PATH", f":{_run_env.get('LD_LIBRARY_PATH', '')}") if _run_env.get("LD_LIBRARY_PATH") else "")
+    # Ensure conda bin is first in PATH (for mpirun etc.), but do NOT override
+    # LD_LIBRARY_PATH — prepending conda lib/ causes clik (Planck likelihood) to
+    # SIGSEGV after loading. The conda Python binary already has the correct rpath.
+    if conda_prefix and os.path.isdir(os.path.join(conda_prefix, "bin")):
         _run_env["PATH"] = os.path.join(conda_prefix, "bin") + os.pathsep + _run_env.get("PATH", "")
     monitor_cmd = [
         python_executable, "plot_chains.py",
@@ -4099,8 +4252,12 @@ async def start_run(config: RunConfig, request: Request = None):
         # Check if process started successfully (wait a moment and check if it's still alive)
         import time as time_module
         time_module.sleep(0.5)
-        if state.running_process.poll() is not None:
-            # Process died immediately - read the log for errors
+        if state.running_process.poll() is None:
+            # Process is alive — now safe to silence C-level stderr (PRTOE fprintf spam).
+            # We deliberately did NOT do this at module-load time so that any launch errors
+            # (missing modules, bad paths, MPI failures) were visible in stderr/logs.
+            _suppress_stderr_for_run()
+        if state.running_process.poll() is not None:            # Process died immediately - read the log for errors
             log_dashboard_error(f"[CRASH] Process died immediately with exit code {state.running_process.returncode}", console=True)
             try:
                 with open(log_file_path, 'rb') as f:
@@ -4280,6 +4437,24 @@ async def add_external_log(log: LogMessage):
     """Receives log messages from external scripts (like the boundary monitor)."""
     state.external_logs.append(log.message)
     return {"message": "Log recorded."}
+
+
+@app.get("/api/logs")
+async def get_logs(lines: int = 200):
+    """Return the last N lines of the current run log file."""
+    prefix = getattr(state, "active_output_prefix", None)
+    if not prefix:
+        return {"lines": [], "path": None, "error": "No active run"}
+    log_path = Path(f"{prefix}.log")
+    if not log_path.exists():
+        return {"lines": [], "path": str(log_path), "error": "Log file not found"}
+    try:
+        with open(log_path, "r") as f:
+            all_lines = f.readlines()
+        tail = all_lines[-lines:]
+        return {"lines": tail, "path": str(log_path), "total": len(all_lines)}
+    except Exception as e:
+        return {"lines": [], "path": str(log_path), "error": str(e)}
 
 @app.post("/api/watchdog")
 async def update_watchdog(report: WatchdogReport):
