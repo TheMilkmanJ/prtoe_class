@@ -12,7 +12,6 @@ likelihood:
   sn.pantheonplusshoes: null
 theory:
   classy:
-    path: /home/themilkmanj/cobaya_packages_clean/code/classy
     stop_at_error: false
     extra_args:
       use_prtoe: 'yes'
@@ -21,7 +20,6 @@ theory:
       N_ur: 2.0328
       N_ncdm: 1
       T_ncdm: 0.71611
-      base_path: /home/themilkmanj/cobaya_packages_clean/code/classy
 params:
   omega_b:
     prior:

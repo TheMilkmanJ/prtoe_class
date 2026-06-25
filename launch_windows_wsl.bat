@@ -25,8 +25,13 @@ echo.
 
 cd /d "%~dp0"
 
+REM Prompt for credentials
+set /p LT_SUBDOMAIN=Enter LT_SUBDOMAIN:
+set /p DASHBOARD_USER=Enter DASHBOARD_USER:
+set /p DASHBOARD_PASS=Enter DASHBOARD_PASS:
+
 REM Run the launcher with environment variables inside WSL
-wsl bash -c "export LT_SUBDOMAIN=TheMilkmanJ && export DASHBOARD_USER=TheMilkmanJ && export DASHBOARD_PASS=Freemilk420! && cd /home/themilkmanj/prtoe_class && ./launch_cosmic.sh"
+wsl bash -c "export LT_SUBDOMAIN='%LT_SUBDOMAIN%' && export DASHBOARD_USER='%DASHBOARD_USER%' && export DASHBOARD_PASS='%DASHBOARD_PASS%' && cd /home/themilkmanj/prtoe_class && ./launch_cosmic.sh"
 
 echo.
 echo CosmicDashboard has stopped.
