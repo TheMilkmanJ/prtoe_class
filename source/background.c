@@ -2849,14 +2849,16 @@ int background_derivs(
     double m2 = pba->m_prtoe * pba->m_prtoe;
     double dV_dphi = -pba->lambda_prtoe * pba->V0_prtoe * exp(-pba->lambda_prtoe * phi) + m2 * phi;
 
-    /* Ricci scalar — correct CLASS conformal convention */
+    /* Ricci scalar — correct CLASS conformal convention
+       In conformal time: R = 6/a² (H' + H² + K) where H = aH_phys = 𝓗 */
     pba->R_curvature = 6.0 / (a * a) *
         (pvecback[pba->index_bg_H_prime] + H * H + pba->K);
 
     /* Klein-Gordon equation in conformal time (background)
-       Friction uses conformal Hubble H (=\mathcal{H}).
-       Source term comes from varying (1 + ξ φ) R → + (ξ/2) R.
-       No extra φ multiplier because the coupling is linear in φ. */
+       Variables: dphi = φ' (conformal time derivative), H = 𝓗 (conformal Hubble)
+       Equation: φ'' + 2𝓗φ' + a²V' = (ξ/2)R a²
+       Friction term: 2𝓗φ' (no extra 1/a factor)
+       Source term: (ξ/2)R a² */
     dy[pba->index_bi_phi_prtoe]  = (dphi / a / MAX(H, 1e-20)) * activation;
     dy[pba->index_bi_dphi_prtoe] = (
       - 2.0 * H * dphi

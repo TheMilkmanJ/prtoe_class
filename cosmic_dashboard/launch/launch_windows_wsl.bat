@@ -19,7 +19,9 @@ echo (Press Ctrl+C to stop)
 echo.
 
 REM Change to the WSL path and run the launcher
-wsl bash -c "cd /home/themilkmanj/prtoe_class && ./launch_cosmic.sh"
+REM Use wslpath to convert current directory to WSL path dynamically
+for /f "delims=" %%i in ('wsl wslpath -a "%cd%"') do set WSL_PATH=%%i
+wsl bash -c "cd \"%WSL_PATH%\" && chmod +x launch_cosmic.sh && ./launch_cosmic.sh"
 
 pause
 

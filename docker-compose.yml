@@ -12,12 +12,12 @@ services:
       - ./chains:/app/chains
     environment:
       - DASHBOARD_USER=${DASHBOARD_USER:-admin}
-      - DASHBOARD_PASS=${DASHBOARD_PASS:-changeme_in_production}
+      - DASHBOARD_PASS=${DASHBOARD_PASS}
       - DASHBOARD_WORKSPACE_ROOT=/app
       - DASHBOARD_WEBHOOK_URL=${DASHBOARD_WEBHOOK_URL:-}
       # Add others as needed: DASHBOARD_PYTHON etc.
     healthcheck:
-      test: ["CMD", "curl", "-f", "-u", "${DASHBOARD_USER:-admin}:${DASHBOARD_PASS}", "http://localhost:8000/api/health"]
+      test: ["CMD", "sh", "-c", "curl -f -u ${DASHBOARD_USER:-admin}:${DASHBOARD_PASS} http://localhost:8000/api/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

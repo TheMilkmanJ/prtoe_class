@@ -231,14 +231,15 @@ def parse_polychord_stats(stats_file: Path, resume_file: Optional[Path] = None):
 
     return stats
 
-def get_best_fit_details(output_prefix: str, state, active_yaml_path: str = ""):
-    """Fixed, non-duplicated version of get_best_fit_details."""
+def get_best_fit_details(output_prefix: str, state=None, active_yaml_path: str = ""):
+    """Fixed, non-duplicated version of get_best_fit_details.
+    state is optional for backward compatibility with one-argument call sites."""
     # Sanitize output_prefix to prevent directory traversal
     _ensure_under_workspace(output_prefix, "Access denied: invalid output prefix path.")
 
     log_file = Path(f"{output_prefix}.log")
     
-    best_log_fit = get_best_fit_from_log(log_file, state)
+    best_log_fit = get_best_fit_from_log(log_file, state) if state else None
     
     prefix_path = Path(output_prefix)
     raw_file = prefix_path.parent / f"{prefix_path.name}_polychord_raw" / f"{prefix_path.name}.txt"

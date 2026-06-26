@@ -212,7 +212,17 @@ def main(args, first_run=False):
         # Raw: [weight, -2logL, params..., logprior, loglikes...]
         # Final: [weight, -2logpost, logprior, params...]
         weights = data[:, 0]
-        loglikes = data[:, 1]
+        
+        if is_raw:
+            # Raw chains: column 1 is -2logL directly
+            loglikes = data[:, 1]
+        else:
+            # Final chains: column 1 is -2logpost, column 2 is logprior
+            # Reconstruct chi2 = -2logpost - 2*logprior
+            logpost = data[:, 1]
+            logprior = data[:, 2]
+            loglikes = logpost - 2.0 * logprior
+        
         samps = data[:, 2:] if is_raw else data[:, 3:]
         
         # 2. Dynamically load parameter names from the .paramnames file

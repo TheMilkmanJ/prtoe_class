@@ -461,10 +461,13 @@ def anakin_skywalker_directive():
     killed_processes = []
 
     # Get dashboard-owned process PIDs to scope cleanup
+    # Track root PIDs separately to avoid killing the live tracked run
+    root_pids = set()
     dashboard_pids = set()
+    
     if state.running_process and state.running_process.poll() is None:
-        dashboard_pids.add(state.running_process.pid)
-        # Add children of running process
+        root_pids.add(state.running_process.pid)
+        # Add children of running process to candidate list
         try:
             parent = psutil.Process(state.running_process.pid)
             for child in parent.children(recursive=True):
@@ -473,8 +476,8 @@ def anakin_skywalker_directive():
             pass
     
     if state.monitor_process and state.monitor_process.poll() is None:
-        dashboard_pids.add(state.monitor_process.pid)
-        # Add children of monitor process
+        root_pids.add(state.monitor_process.pid)
+        # Add children of monitor process to candidate list
         try:
             parent = psutil.Process(state.monitor_process.pid)
             for child in parent.children(recursive=True):
@@ -4841,18 +4844,28 @@ async def compute_custom_derived(req: dict = Body(...)):
     }
     
     def safe_eval(expr, safe_dict):
-        """Safely evaluate arithmetic expressions using AST parsing."""
+        """Safely evaluate arithmetic expressions using AST parsing with bounds and finite checks."""
         node = ast.parse(expr, mode='eval')
         
         def _eval(node):
             if isinstance(node, ast.Constant):
                 if isinstance(node.value, (int, float)):
+                    # Check for reasonable bounds to prevent overflow
+                    if isinstance(node.value, float):
+                        if abs(node.value) > 1e100 or (abs(node.value) < 1e-100 and node.value != 0):
+                            raise ValueError(f"Constant {node.value} out of reasonable bounds")
                     return node.value
                 else:
                     raise ValueError(f"Constant {node.value} not allowed")
             elif isinstance(node, ast.Name):
                 if node.id in safe_dict:
-                    return safe_dict[node.id]
+                    val = safe_dict[node.id]
+                    if isinstance(val, (int, float)):
+                        # Check for reasonable bounds
+                        if isinstance(val, float):
+                            if abs(val) > 1e100 or (abs(val) < 1e-100 and val != 0):
+                                raise ValueError(f"Value {val} for {node.id} out of reasonable bounds")
+                    return val
                 else:
                     raise ValueError(f"Name '{node.id}' not in safe context")
             elif isinstance(node, ast.BinOp):
@@ -4860,20 +4873,40 @@ async def compute_custom_derived(req: dict = Body(...)):
                 right = _eval(node.right)
                 op_type = type(node.op)
                 if op_type in safe_operators:
-                    return safe_operators[op_type](left, right)
+                    # Special bounds check for exponentiation
+                    if op_type == ast.Pow:
+                        # Limit exponent to reasonable range
+                        if isinstance(right, float) and abs(right) > 100:
+                            raise ValueError(f"Exponent {right} too large")
+                        # Limit base magnitude for large exponents
+                        if isinstance(right, float) and right > 10 and isinstance(left, float) and abs(left) > 100:
+                            raise ValueError(f"Base {left} too large for exponent {right}")
+                    result = safe_operators[op_type](left, right)
+                    # Check for finite result
+                    if isinstance(result, float) and not (result == result and abs(result) < float('inf')):
+                        raise ValueError(f"Result {result} is not finite")
+                    return result
                 else:
                     raise ValueError(f"Operator {op_type.__name__} not allowed")
             elif isinstance(node, ast.UnaryOp):
                 operand = _eval(node.operand)
                 op_type = type(node.op)
                 if op_type in safe_operators:
-                    return safe_operators[op_type](operand)
+                    result = safe_operators[op_type](operand)
+                    # Check for finite result
+                    if isinstance(result, float) and not (result == result and abs(result) < float('inf')):
+                        raise ValueError(f"Result {result} is not finite")
+                    return result
                 else:
                     raise ValueError(f"Unary operator {op_type.__name__} not allowed")
             else:
                 raise ValueError(f"Expression type {type(node).__name__} not allowed")
         
-        return _eval(node.body)
+        result = _eval(node.body)
+        # Final finite check
+        if isinstance(result, float) and not (result == result and abs(result) < float('inf')):
+            raise ValueError(f"Final result {result} is not finite")
+        return result
     
     expressions = req.get("expressions", [])
     engine = get_active_class_engine()
@@ -8840,13 +8873,14 @@ async def api_login(req: LoginRequest, response: FastAPIResponse, request: Reque
             )
     
     if not (secrets.compare_digest(req.username, req_user) and secrets.compare_digest(req.password, req_pass)):
-        # Increment failed attempts
+        # Increment failed attempts - only set lockout after threshold
         count, lock_until = FAILED_LOGIN_ATTEMPTS.get(client_ip, (0, 0.0))
         count += 1
         if count >= 5:
             lock_until = now + 300  # 5 minute lockout after 5 failures
         else:
-            lock_until = now + 30  # 30 second incremental delay
+            # For early failures, don't set a blocking lock_until - just track count
+            lock_until = 0.0
         FAILED_LOGIN_ATTEMPTS[client_ip] = (count, lock_until)
         _save_json_store(Path("chains/dashboard_failed_logins.json"), FAILED_LOGIN_ATTEMPTS)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
