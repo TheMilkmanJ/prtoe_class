@@ -153,6 +153,22 @@ document.addEventListener('DOMContentLoaded', () => {
     // 5 seconds is still very responsive for long-running MCMC chains
     statusInterval = setInterval(checkStatus, 5000);
 
+    // Run Complete Summary Card event listeners
+    const btnCloseSummary = document.getElementById('btn-close-summary');
+    if (btnCloseSummary) {
+        btnCloseSummary.addEventListener('click', () => {
+            const card = document.getElementById('run-complete-summary-card');
+            if (card) card.style.display = 'none';
+        });
+    }
+    const btnViewOptimizerDetails = document.getElementById('btn-view-optimizer-details');
+    if (btnViewOptimizerDetails) {
+        btnViewOptimizerDetails.addEventListener('click', () => {
+            const optTabBtn = document.getElementById('tab-btn-optimizer');
+            if (optTabBtn) optTabBtn.click();
+        });
+    }
+
     // WebSocket for real-time (production improvement, fallback to poll)
     try {
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -953,6 +969,27 @@ async function fetchMultimodalComparison() {
         const data = await response.json();
         if (data.status === 'success' && data.modes && data.modes.length > 0) {
             multimodalComparisonCard.style.display = 'block';
+            
+            // Update the Run Complete Summary Card values
+            const summaryCombinedLogZ = document.getElementById('summary-combined-logz');
+            const summaryModesCount = document.getElementById('summary-modes-count');
+            const summaryExplorationHealth = document.getElementById('summary-exploration-health');
+            
+            if (summaryCombinedLogZ) {
+                summaryCombinedLogZ.textContent = data.combined_logz !== undefined && data.combined_logz !== null ? data.combined_logz.toFixed(4) : '-';
+            }
+            if (summaryModesCount) {
+                summaryModesCount.textContent = data.modes.length;
+            }
+            if (summaryExplorationHealth) {
+                summaryExplorationHealth.textContent = data.exploration_health || '100.0%';
+            }
+            
+            // Show the card if the current run is completed and it's an optimizer run
+            const runCompleteCard = document.getElementById('run-complete-summary-card');
+            if (runCompleteCard && lastStatusData && lastStatusData.status === 'completed' && lastStatusData.is_optimizer) {
+                runCompleteCard.style.display = 'block';
+            }
             
             // Build the table html
             let html = `

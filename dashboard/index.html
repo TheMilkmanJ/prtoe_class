@@ -128,6 +128,37 @@
 
         <!-- Main Dashboard Grid -->
         <main class="dashboard-grid">
+            <!-- Real-time Run Complete Summary (appears at the top of the grid when complete) -->
+            <div class="evidence-math" id="run-complete-summary-card" style="grid-column: 1 / -1; display: none; position: relative; background: linear-gradient(135deg, rgba(16, 172, 132, 0.2), rgba(0, 210, 211, 0.15)); border: 1px solid rgba(0, 210, 211, 0.4); box-shadow: 0 4px 25px rgba(0, 210, 211, 0.25); margin-bottom: 15px; padding: 18px; border-radius: 8px;">
+                <button class="copy-btn" id="btn-close-summary" title="Dismiss" style="position: absolute; top: 10px; right: 10px; background: none; border: none; color: #a4b0be; cursor: pointer; font-size: 1rem; transition: all 0.2s ease;">✕</button>
+                <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 15px;">
+                    <div style="max-width: 50%;">
+                        <h3 style="margin: 0 0 5px 0; color: #00d2d3; font-size: 1.15rem; display: flex; align-items: center; gap: 8px;">
+                            <span>🎉</span> Cosmo Optimizer Run Complete!
+                        </h3>
+                        <p style="margin: 0; color: #a4b0be; font-size: 0.85rem;">
+                            The multi-start optimizer has successfully finished. Mode clustering, GP surrogate-accelerated MCMC, and Gelfand-Dey evidence estimation are complete.
+                        </p>
+                    </div>
+                    <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+                        <div style="text-align: center; background: rgba(0,0,0,0.2); padding: 8px 15px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.05);">
+                            <div style="font-size: 0.72rem; color: #a4b0be; text-transform: uppercase;">Combined ln(Z)</div>
+                            <div style="font-size: 1.25rem; font-weight: bold; color: #00d2d3; font-family: var(--font-mono);" id="summary-combined-logz">-</div>
+                        </div>
+                        <div style="text-align: center; background: rgba(0,0,0,0.2); padding: 8px 15px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.05);">
+                            <div style="font-size: 0.72rem; color: #a4b0be; text-transform: uppercase;">Modes Found</div>
+                            <div style="font-size: 1.25rem; font-weight: bold; color: #ff9f43; font-family: var(--font-mono);" id="summary-modes-count">-</div>
+                        </div>
+                        <div style="text-align: center; background: rgba(0,0,0,0.2); padding: 8px 15px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.05);">
+                            <div style="font-size: 0.72rem; color: #a4b0be; text-transform: uppercase;">Exploration Health</div>
+                            <div style="font-size: 1.25rem; font-weight: bold; color: #10ac84; font-family: var(--font-mono);" id="summary-exploration-health">-</div>
+                        </div>
+                    </div>
+                    <button class="btn btn-primary btn-glow" id="btn-view-optimizer-details" style="padding: 10px 18px; font-size: 0.88rem; background: linear-gradient(135deg, #10ac84, #00d2d3); border: none; box-shadow: 0 4px 15px rgba(0, 210, 211, 0.4); font-weight: bold;">
+                        🔍 View Multimodal Report
+                    </button>
+                </div>
+            </div>
             <!-- Left Panel: Configuration & Uploads -->
             <section class="panel glassmorphic scrollable" id="config-panel">
                 <h2><span class="icon">&#x2699;</span> Configuration & Uploads</h2>
