@@ -4,16 +4,20 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CosmicDashboard - CLASS & Cobaya Controller</title>
+    <!-- Preconnect to external origins so DNS+TLS happens in parallel with HTML parse -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://cdn.jsdelivr.net">
     <link rel="stylesheet" href="index.css">
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- font-display=swap: text renders immediately in fallback font, swaps when loaded -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+    <noscript><link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet"></noscript>
+    <!-- Chart.js: defer so it doesn't block HTML parsing or first paint -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
     <style>
-        /* Deep Space Nebula Background */
+        /* Deep Space Nebula Background — loaded lazily after paint to avoid blocking */
         body {
             background-color: #030008 !important;
-            background-image: 
-                linear-gradient(to bottom, rgba(3, 0, 8, 0.4), rgba(3, 0, 8, 0.9)),
-                url('https://images.unsplash.com/photo-1462331940025-496dfbfc7564?q=80&w=2560&auto=format&fit=crop') !important;
             background-size: cover !important;
             background-position: center center !important;
             background-attachment: fixed !important;
@@ -134,10 +138,10 @@
                 <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 15px;">
                     <div style="max-width: 50%;">
                         <h3 style="margin: 0 0 5px 0; color: #00d2d3; font-size: 1.15rem; display: flex; align-items: center; gap: 8px;">
-                            <span>🎉</span> Cosmo Optimizer Run Complete!
+                            <span>🎉</span> CosmicForge Run Complete!
                         </h3>
                         <p style="margin: 0; color: #a4b0be; font-size: 0.85rem;">
-                            The multi-start optimizer has successfully finished. Mode clustering, GP surrogate-accelerated MCMC, and Gelfand-Dey evidence estimation are complete.
+                            The multi-start CosmicForge has successfully finished. Mode clustering, GP surrogate-accelerated MCMC, and Gelfand-Dey evidence estimation are complete.
                         </p>
                     </div>
                     <div style="display: flex; gap: 20px; flex-wrap: wrap;">
@@ -265,12 +269,12 @@
 
                 <!-- Profile Likelihood Scan Collapsible Panel -->
                 <div style="margin-top: 15px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 12px; margin-bottom: 10px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none;" onclick="const el=document.getElementById('profile-scan-settings'); el.style.display=el.style.display==='none'?'block':'none';">
+                    <button type="button" style="display: flex; justify-content: space-between; align-items: center; width: 100%; background: none; border: none; cursor: pointer; user-select: none; padding: 0; color: inherit;" onclick="const el=document.getElementById('profile-scan-settings'); el.style.display=el.style.display==='none'?'block':'none';">
                         <span style="font-weight: bold; color: #00d2d3; font-size: 0.88rem; display: flex; align-items: center; gap: 6px;">
                             📊 Profile Likelihood Scan Settings
                         </span>
                         <span style="font-size: 0.8rem; color: #a4b0be;">(Click to Toggle)</span>
-                    </div>
+                    </button>
                     <div id="profile-scan-settings" style="display: none; margin-top: 10px;">
                         <div style="display: flex; flex-direction: column; gap: 8px;">
                             <div style="display: flex; gap: 10px; align-items: center;">
@@ -302,7 +306,9 @@
                 <!-- Action Buttons -->
                 <div class="actions" style="display: flex; gap: 10px; flex-wrap: wrap;">
                     <button class="btn btn-primary btn-glow" id="btn-start" style="flex: 1; padding: 12px 10px; font-size: 0.95rem;">Start New Run</button>
-                    <button class="btn btn-primary btn-glow" id="btn-start-opt" style="flex: 1; padding: 12px 10px; font-size: 0.95rem; background: linear-gradient(135deg, #10ac84, #00d2d3); color: white; border: none; box-shadow: 0 4px 15px rgba(0, 210, 211, 0.4);">Start Optimized Run</button>
+                    <button class="btn btn-primary btn-glow" id="btn-start-opt" style="flex: 1; padding: 12px 10px; font-size: 0.95rem; background: linear-gradient(135deg, #10ac84, #00d2d3); color: white; border: none; box-shadow: 0 4px 15px rgba(0, 210, 211, 0.4);">Start CosmicForge</button>
+                    <button class="btn" id="btn-apply-cosmicforge" style="flex: 1; padding: 12px 10px; font-size: 0.95rem; background: linear-gradient(135deg, #6c5ce7, #a29bfe); color: white; border: none; box-shadow: 0 4px 15px rgba(108, 92, 231, 0.4);" title="Apply CosmicForge settings to selected config">🚀 Apply CosmicForge</button>
+                    <button class="btn" id="btn-load-last-run" style="flex: 1; padding: 12px 10px; font-size: 0.95rem; background: #6c5ce7; color: white; border: none; box-shadow: 0 4px 15px rgba(108, 92, 231, 0.4);" title="Reload last run configuration from phone">📱 Replay Last Run</button>
                     <button class="btn" id="btn-resume" style="flex: 1; padding: 12px 10px; font-size: 0.95rem; background: #3867d6; color: white; border: none; box-shadow: 0 4px 15px rgba(56, 103, 214, 0.4);">Resume Run</button>
                     <button class="btn btn-danger" id="btn-stop" disabled style="flex: 1; padding: 12px 10px; font-size: 0.95rem;">Abort Active Run</button>
                 </div>
@@ -316,9 +322,11 @@
                         <span><span id="watchdog-icon" style="font-size: 1.2rem; margin-right: 5px;">🐶</span> Watchdog Status</span>
                         <div style="display: flex; align-items: center; gap: 8px;">
                             <span style="font-size: 0.65rem; color: #a4b0be; text-transform: uppercase; letter-spacing: 0.5px; margin-right: 2px;">Auto Actions</span>
-                            <div class="toggle-container" style="position: relative; width: 34px; height: 18px; cursor: pointer; background: #10ac84; border-radius: 9px; transition: background 0.2s; display: inline-block; vertical-align: middle;" id="toggle-auto-watchdog" title="Toggle automated prior boundary recovery & restarts">
-                                <div class="toggle-handle" style="position: absolute; top: 2px; left: 18px; width: 14px; height: 14px; background: white; border-radius: 50%; transition: left 0.2s; box-shadow: 0 1px 2px rgba(0,0,0,0.3);"></div>
-                            </div>
+                            <label style="position: relative; display: inline-block; width: 34px; height: 18px; cursor: pointer;" title="Toggle automated prior boundary recovery & restarts">
+                                <input type="checkbox" id="toggle-auto-watchdog" checked style="opacity: 0; width: 0; height: 0;">
+                                <span class="slider" style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #10ac84; transition: 0.2s; border-radius: 9px;"></span>
+                                <span class="slider-handle" style="position: absolute; content: ''; height: 14px; width: 14px; left: 18px; bottom: 2px; background-color: white; transition: 0.2s; border-radius: 50%; box-shadow: 0 1px 2px rgba(0,0,0,0.3);"></span>
+                            </label>
                         </div>
                     </div>
                     <div class="jeffreys-value" id="watchdog-text" style="color: #00d2d3; font-size: 1.5rem; text-shadow: 0 0 10px rgba(0, 210, 211, 0.5); transition: color 0.3s ease;">All clear, Captain!</div>
@@ -340,82 +348,142 @@
                 </div>
             </section>
 
-            <!-- Center Panel: Real-Time Sampler Monitor -->
             <section class="panel glassmorphic" id="monitor-panel" style="min-width: 0;">
-                <h2><span class="icon">&#x23f2;</span> Real-Time Monitor</h2>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 8px;">
+                    <h2 style="margin: 0; font-size: 1.25rem;"><span class="icon">&#x23f2;</span> Real-Time Monitor</h2>
+                    <div class="tab-header" style="margin: 0; border: none; padding: 0; display: flex; gap: 5px;">
+                        <button class="tab-btn active" id="btn-monitor-tab-sampler" onclick="switchMonitorTab('sampler')" style="padding: 4px 10px; font-size: 0.75rem; border-radius: 4px;">Standard Sampler</button>
+                        <button class="tab-btn" id="btn-monitor-tab-optimizer" onclick="switchMonitorTab('optimizer')" style="padding: 4px 10px; font-size: 0.75rem; border-radius: 4px;">🌌 CosmicForge</button>
+                    </div>
+                </div>
                 
-                <div class="monitor-stats">
-                    <div class="stat-card">
-                        <span class="stat-label">Dead Points (Iterations)</span>
-                        <span class="stat-value" id="stat-dead">0</span>
-                    </div>
-                    <div class="stat-card">
-                        <span class="stat-label">Estimated log(Z)</span>
-                        <span class="stat-value highlight-cyan" id="stat-evidence">-</span>
-                    </div>
-                    <!-- New: Confidence Tracker - shows how confident the sampler is in current likelihood & parameters -->
-                    <div class="stat-card">
-                        <span class="stat-label">Sampler Confidence</span>
-                        <span class="stat-value" id="stat-confidence" style="font-size: 1.6rem; font-weight: 700;">-</span>
-                        <div style="margin-top: 3px; font-size: 0.62rem; color: #a4b0be; display: flex; gap: 5px; justify-content: space-between;">
-                            <span>Ev:<span id="conf-evidence" style="color:#fff; font-family: var(--font-mono);">-</span></span>
-                            <span>Par:<span id="conf-params" style="color:#fff; font-family: var(--font-mono);">-</span></span>
-                            <span>Run:<span id="conf-sampler" style="color:#fff; font-family: var(--font-mono);">-</span></span>
+                <!-- Sampler View -->
+                <div id="monitor-view-sampler">
+                    <div class="monitor-stats">
+                        <div class="stat-card">
+                            <span class="stat-label">Dead Points (Iterations)</span>
+                            <span class="stat-value" id="stat-dead">0</span>
                         </div>
-                        <div id="conf-message" style="margin-top: 2px; font-size: 0.6rem; color: #666; font-family: var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">-</div>
-                    </div>
-                    <div class="stat-card" style="position: relative;">
-                        <button class="copy-btn" id="btn-copy-bestfit" title="Copy best-fit parameters" style="position: absolute; top: 10px; right: 10px; background: none; border: none; color: #a4b0be; cursor: pointer; font-size: 0.9rem; padding: 2px 6px; border-radius: 4px; transition: all 0.2s ease;">📋</button>
-                        <span class="stat-label">Best-Fit &chi;&sup2;</span>
-                        <span class="stat-value highlight-neon" id="stat-chi2">-</span>
-                        <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--text-secondary); margin-top: 4px; font-family: var(--font-mono);">
-                            <span>CMB:<span id="stat-chi2-cmb" style="color:#fff; margin-left:4px">-</span></span>
-                            <span>BAO:<span id="stat-chi2-bao" style="color:#fff; margin-left:4px">-</span></span>
-                            <span>SN:<span id="stat-chi2-sn" style="color:#fff; margin-left:4px">-</span></span>
+                        <div class="stat-card">
+                            <span class="stat-label">Estimated log(Z)</span>
+                            <span class="stat-value highlight-cyan" id="stat-evidence">-</span>
                         </div>
-                        <div id="stat-raw-params" style="margin-top: 10px; font-size: 0.7rem; color: #a4b0be; font-family: var(--font-mono); max-height: 120px; overflow-y: auto; overflow-x: auto; background: rgba(0,0,0,0.2); padding: 6px; border-radius: 4px; display: none; word-break: break-all;">
-                            <!-- Raw params injected here -->
+                        <div class="stat-card">
+                            <span class="stat-label">Sampler Confidence</span>
+                            <span class="stat-value" id="stat-confidence" style="font-size: 1.6rem; font-weight: 700;">-</span>
+                            <div style="margin-top: 3px; font-size: 0.62rem; color: #a4b0be; display: flex; gap: 5px; justify-content: space-between;">
+                                <span>Ev:<span id="conf-evidence" style="color:#fff; font-family: var(--font-mono);">-</span></span>
+                                <span>Par:<span id="conf-params" style="color:#fff; font-family: var(--font-mono);">-</span></span>
+                                <span>Run:<span id="conf-sampler" style="color:#fff; font-family: var(--font-mono);">-</span></span>
+                            </div>
+                            <div id="conf-message" style="margin-top: 2px; font-size: 0.6rem; color: #666; font-family: var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">-</div>
                         </div>
-                    </div>
-                    <div class="stat-card" style="align-items: center; justify-content: center;">
-                        <span class="stat-label" style="align-self: flex-start; width: 100%;">System CPU Load</span>
-                        <div style="position: relative; width: 140px; height: 70px; margin-top: 15px;">
-                            <svg viewBox="0 0 100 50" style="width: 100%; height: 100%; overflow: visible;">
-                                <path d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="12" stroke-linecap="round"/>
-                                <path id="cpu-gauge-path" d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="#00d2d3" stroke-width="12" stroke-linecap="round" stroke-dasharray="125.66" stroke-dashoffset="125.66" style="transition: stroke-dashoffset 0.5s ease-out, stroke 0.5s ease;"/>
-                            </svg>
-                            <div style="position: absolute; bottom: -5px; left: 0; width: 100%; text-align: center;">
-                                <span id="stat-cpu" style="font-family: var(--font-mono); font-size: 1.5rem; font-weight: 700; color: #fff;">0%</span>
+                        <div class="stat-card" style="position: relative;">
+                            <button class="copy-btn" id="btn-copy-bestfit" title="Copy best-fit parameters" style="position: absolute; top: 10px; right: 10px; background: none; border: none; color: #a4b0be; cursor: pointer; font-size: 0.9rem; padding: 2px 6px; border-radius: 4px; transition: all 0.2s ease;">📋</button>
+                            <span class="stat-label">Best-Fit &chi;&sup2;</span>
+                            <span class="stat-value highlight-neon" id="stat-chi2">-</span>
+                            <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--text-secondary); margin-top: 4px; font-family: var(--font-mono);">
+                                <span>CMB:<span id="stat-chi2-cmb" style="color:#fff; margin-left:4px">-</span></span>
+                                <span>BAO:<span id="stat-chi2-bao" style="color:#fff; margin-left:4px">-</span></span>
+                                <span>SN:<span id="stat-chi2-sn" style="color:#fff; margin-left:4px">-</span></span>
+                            </div>
+                            <div id="stat-raw-params" style="margin-top: 10px; font-size: 0.7rem; color: #a4b0be; font-family: var(--font-mono); max-height: 120px; overflow-y: auto; overflow-x: auto; background: rgba(0,0,0,0.2); padding: 6px; border-radius: 4px; display: none; word-break: break-all;">
+                                <!-- Raw params injected here -->
                             </div>
                         </div>
+                        <div class="stat-card" style="align-items: center; justify-content: center;">
+                            <span class="stat-label" style="align-self: flex-start; width: 100%;">System CPU Load</span>
+                            <div style="position: relative; width: 140px; height: 70px; margin-top: 15px;">
+                                <svg viewBox="0 0 100 50" style="width: 100%; height: 100%; overflow: visible;">
+                                    <path d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="12" stroke-linecap="round"/>
+                                    <path id="cpu-gauge-path" d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="#00d2d3" stroke-width="12" stroke-linecap="round" stroke-dasharray="125.66" stroke-dashoffset="125.66" style="transition: stroke-dashoffset 0.5s ease-out, stroke 0.5s ease;"/>
+                                </svg>
+                                <div style="position: absolute; bottom: -5px; left: 0; width: 100%; text-align: center;">
+                                    <span id="stat-cpu" style="font-family: var(--font-mono); font-size: 1.5rem; font-weight: 700; color: #fff;">0%</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <span class="stat-label">Sampling Speed</span>
+                            <span class="stat-value highlight-cyan" id="stat-speed">-</span>
+                        </div>
+                        <div class="stat-card">
+                            <span class="stat-label">Est. Time Remaining (ETA)</span>
+                            <span class="stat-value highlight-neon" id="stat-eta">-</span>
+                        </div>
                     </div>
-                    <div class="stat-card">
-                        <span class="stat-label">Sampling Speed</span>
-                        <span class="stat-value highlight-cyan" id="stat-speed">-</span>
+
+                    <div class="progress-container">
+                        <div class="progress-header">
+                            <span>Initialization Phase (Gathering Live Points)</span>
+                            <span id="init-percent">0%</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="init-fill" style="background: linear-gradient(90deg, #ff9ff3, #feca57);"></div>
+                        </div>
                     </div>
-                    <div class="stat-card">
-                        <span class="stat-label">Est. Time Remaining (ETA)</span>
-                        <span class="stat-value highlight-neon" id="stat-eta">-</span>
+
+                    <div class="progress-container">
+                        <div class="progress-header">
+                            <span>Sampling Convergence</span>
+                            <span id="progress-percent">0%</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="progress-fill"></div>
+                        </div>
                     </div>
                 </div>
 
-                <div class="progress-container">
-                    <div class="progress-header">
-                        <span>Initialization Phase (Gathering Live Points)</span>
-                        <span id="init-percent">0%</span>
+                <!-- CosmicForge View -->
+                <div id="monitor-view-optimizer" style="display: none;">
+                    <div class="monitor-stats">
+                        <div class="stat-card">
+                            <span class="stat-label">Total Evaluations</span>
+                            <span class="stat-value" id="opt-stat-evals">0</span>
+                        </div>
+                        <div class="stat-card" style="position: relative;">
+                            <span class="stat-label">Best-Fit &chi;&sup2;</span>
+                            <span class="stat-value highlight-neon" id="opt-stat-chi2">-</span>
+                            <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--text-secondary); margin-top: 4px; font-family: var(--font-mono);">
+                                <span>CMB:<span id="opt-stat-chi2-cmb" style="color:#fff; margin-left:4px">-</span></span>
+                                <span>BAO:<span id="opt-stat-chi2-bao" style="color:#fff; margin-left:4px">-</span></span>
+                                <span>SN:<span id="opt-stat-chi2-sn" style="color:#fff; margin-left:4px">-</span></span>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <span class="stat-label">Active Phase</span>
+                            <span class="stat-value highlight-cyan" id="opt-stat-phase" style="font-size: 1.3rem;">Local Search</span>
+                        </div>
+                        <div class="stat-card" style="align-items: center; justify-content: center;">
+                            <span class="stat-label" style="align-self: flex-start; width: 100%;">System CPU Load</span>
+                            <div style="position: relative; width: 140px; height: 70px; margin-top: 15px;">
+                                <svg viewBox="0 0 100 50" style="width: 100%; height: 100%; overflow: visible;">
+                                    <path d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="12" stroke-linecap="round"/>
+                                    <path id="opt-cpu-gauge-path" d="M 10 50 A 40 40 0 0 1 90 50" fill="none" stroke="#a29bfe" stroke-width="12" stroke-linecap="round" stroke-dasharray="125.66" stroke-dashoffset="125.66" style="transition: stroke-dashoffset 0.5s ease-out, stroke 0.5s ease;"/>
+                                </svg>
+                                <div style="position: absolute; bottom: -5px; left: 0; width: 100%; text-align: center;">
+                                    <span id="opt-stat-cpu" style="font-family: var(--font-mono); font-size: 1.5rem; font-weight: 700; color: #fff;">0%</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <span class="stat-label">Evaluation Speed</span>
+                            <span class="stat-value highlight-cyan" id="opt-stat-speed">-</span>
+                        </div>
+                        <div class="stat-card">
+                            <span class="stat-label">Est. Time Remaining (ETA)</span>
+                            <span class="stat-value highlight-neon" id="opt-stat-eta">-</span>
+                        </div>
                     </div>
-                    <div class="progress-bar">
-                        <div class="progress-fill" id="init-fill" style="background: linear-gradient(90deg, #ff9ff3, #feca57);"></div>
-                    </div>
-                </div>
 
-                <div class="progress-container">
-                    <div class="progress-header">
-                        <span>Sampling Convergence</span>
-                        <span id="progress-percent">0%</span>
-                    </div>
-                    <div class="progress-bar">
-                        <div class="progress-fill" id="progress-fill"></div>
+                    <div class="progress-container" style="margin-top: 20px;">
+                        <div class="progress-header">
+                            <span>Optimization & MCMC Sampling Progress</span>
+                            <span id="opt-progress-percent">0%</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="opt-progress-fill" style="background: linear-gradient(90deg, #a29bfe, #6c5ce7);"></div>
+                        </div>
                     </div>
                 </div>
 
@@ -448,7 +516,7 @@
                 <!-- Tab Headers -->
                 <div class="tabs-header" style="display: flex; gap: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; margin-bottom: 15px; flex-wrap: wrap;">
                     <button class="tab-btn active" data-tab="tab-tension">Tension &amp; Compare</button>
-                    <button class="tab-btn" data-tab="tab-optimizer" id="tab-btn-optimizer" style="display: none; background: rgba(0, 210, 211, 0.15); border: 1px solid rgba(0, 210, 211, 0.3); color: #00d2d3;">⚡ Optimized Run</button>
+                    <button class="tab-btn" data-tab="tab-optimizer" id="tab-btn-optimizer" style="background: rgba(0, 210, 211, 0.15); border: 1px solid rgba(0, 210, 211, 0.3); color: #00d2d3;">🌌 CosmicForge Run</button>
                     <button class="tab-btn" data-tab="tab-curves">Cosmo Curves</button>
                     <button class="tab-btn" data-tab="tab-corner">Posterior Corner</button>
                     <button class="tab-btn" data-tab="tab-compare">Model Suite</button>
@@ -627,6 +695,9 @@
                     <button class="btn btn-primary btn-glow" id="btn-copy-ai-prompt" style="margin-top: 15px; width: 100%; padding: 12px; font-size: 0.95rem; background: linear-gradient(135deg, #00d2d3, #3867d6); border: none; box-shadow: 0 4px 15px rgba(0, 210, 211, 0.3);">
                         ✨ Copy AI Diagnostic Prompt
                     </button>
+                    <button class="btn" id="btn-copy-ai-cosmicforge" style="margin-top: 6px; width: 100%; padding: 10px; font-size: 0.9rem; background: linear-gradient(135deg, #a29bfe, #00d2d3); border: none; box-shadow: 0 4px 15px rgba(162, 155, 254, 0.3); font-weight: bold;">
+                        🌌 Copy CosmicForge Optimizer Prompt
+                    </button>
                     <button class="btn" id="btn-copy-ai-stacking" style="margin-top: 6px; width: 100%; padding: 8px; font-size: 0.85rem; background: linear-gradient(135deg, #5f27cd, #ff9ff3); border: none;">
                         📊 Copy Stacking / Ensemble Prompt
                     </button>
@@ -634,7 +705,7 @@
                         🔬 Copy Savage-Dickey / Nested Test Prompt
                     </button>
                     <button class="btn btn-secondary" id="btn-copy-all-ai-prompts" style="margin-top: 10px; width: 100%; padding: 10px; font-size: 0.9rem; background: linear-gradient(135deg, #10ac84, #00d2d3); border: none; box-shadow: 0 4px 15px rgba(16, 172, 132, 0.3); font-weight: bold;">
-                        📋 Copy ALL AI Prompts (Diagnostic + Stacking + Savage + Paper + Full Context)
+                        📋 Copy ALL AI Prompts (Diagnostic + Stacking + Savage + CosmicForge + Paper + Full Context)
                     </button>
                 </div>
 
@@ -642,28 +713,74 @@
                 <div class="tab-content" id="tab-optimizer">
                     <!-- Real-time Convergence Plot -->
                     <div class="evidence-math" style="position: relative;">
-                        <div class="jeffreys-title"><span style="font-size: 1.2rem; margin-right: 5px;">📈</span> Optimizer Convergence Progress</div>
+                        <div class="jeffreys-title"><span style="font-size: 1.2rem; margin-right: 5px;">📈</span> CosmicForge Convergence Progress</div>
                         <div style="text-align: center; margin-top: 10px;">
-                            <img id="optimizer-plot-img" src="/api/posteriors_plot?t=0" style="max-width: 100%; height: auto; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08); background: #000;" onerror="this.style.display='none'; document.getElementById('optimizer-plot-fallback').style.display='block';" onload="document.getElementById('optimizer-plot-fallback').style.display='none';" />
+                            <img id="optimizer-plot-img" src="" style="max-width: 100%; height: auto; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08); background: #000; display:none;" onerror="this.style.display='none'; document.getElementById('optimizer-plot-fallback').style.display='block';" onload="this.style.display='block'; document.getElementById('optimizer-plot-fallback').style.display='none';" />
                             <div id="optimizer-plot-fallback" style="padding: 40px; color: #a4b0be; font-size: 0.85rem;">Convergence plot will appear once the first evaluations are computed.</div>
                         </div>
                     </div>
 
-                    <!-- Multimodal Modes Comparison Card (Cosmo Optimizer) -->
+                    <!-- Multimodal Modes Comparison Card (CosmicForge) -->
                     <div class="evidence-math" id="multimodal-comparison-card" style="margin-top: 15px; position: relative;">
                         <button class="copy-btn" id="btn-copy-multimodal" title="Copy multimodal comparison" style="position: absolute; top: 10px; right: 10px; background: none; border: none; color: #a4b0be; cursor: pointer; font-size: 0.9rem; padding: 2px 6px; border-radius: 4px; transition: all 0.2s ease;">📋</button>
                         <div class="jeffreys-title"><span style="font-size: 1.2rem; margin-right: 5px;">🌌</span> Multimodal Modes Comparison</div>
                         <div id="multimodal-comparison-body" style="font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.45; margin-top: 8px; overflow-x: auto;">
-                            <div style="color:#a4b0be">Run the Cosmo Optimizer with multistart to see Planck-preferred vs SH0ES-preferred modes compared.</div>
+                            <div style="color:#a4b0be">Run CosmicForge with multistart to see Planck-preferred vs SH0ES-preferred modes compared.</div>
                         </div>
                     </div>
 
                     <!-- Parameter Tension Analysis Card -->
                     <div class="evidence-math" id="tension-analysis-card" style="margin-top: 15px; position: relative;">
                         <button class="copy-btn" id="btn-copy-tension" title="Copy tension analysis" style="position: absolute; top: 10px; right: 10px; background: none; border: none; color: #a4b0be; cursor: pointer; font-size: 0.9rem; padding: 2px 6px; border-radius: 4px; transition: all 0.2s ease;">📋</button>
-                        <div class="jeffreys-title"><span style="font-size: 1.2rem; margin-right: 5px;">⚡</span> Mode Tension Analysis (Planck vs. SH0ES)</div>
+                        <div class="jeffreys-title"><span style="font-size: 1.2rem; margin-right: 5px;">🌌</span> Mode Tension Analysis (Planck vs. SH0ES)</div>
                         <div id="tension-analysis-body" style="font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.45; margin-top: 8px; overflow-x: auto;">
                             <div style="color:#a4b0be">Run multi-start optimization to see parameter tension resolved.</div>
+                        </div>
+                    </div>
+
+                    <!-- MCMC Diagnostics Card -->
+                    <div class="evidence-math" id="mcmc-diagnostics-card" style="margin-top: 15px; position: relative; display: none;">
+                        <button class="copy-btn" id="btn-copy-mcmc-diag" title="Copy MCMC diagnostics" style="position: absolute; top: 10px; right: 10px; background: none; border: none; color: #a4b0be; cursor: pointer; font-size: 0.9rem; padding: 2px 6px; border-radius: 4px; transition: all 0.2s ease;">📋</button>
+                        <div class="jeffreys-title"><span style="font-size: 1.2rem; margin-right: 5px;">📊</span> MCMC Diagnostics (ESS & R̂)</div>
+                        <div id="mcmc-diagnostics-body" style="font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.5; margin-top: 8px; overflow-x: auto; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 4px;">
+                            <div style="color:#a4b0be">No MCMC diagnostics available yet. Run with --mcmc-steps >= 10000 to enable.</div>
+                        </div>
+                    </div>
+
+                    <!-- Mode Metadata & Diagnostics Card -->
+                    <div class="evidence-math" id="mode-metadata-card" style="margin-top: 15px; position: relative; display: none;">
+                        <button class="copy-btn" id="btn-copy-mode-meta" title="Copy mode metadata" style="position: absolute; top: 10px; right: 10px; background: none; border: none; color: #a4b0be; cursor: pointer; font-size: 0.9rem; padding: 2px 6px; border-radius: 4px; transition: all 0.2s ease;">📋</button>
+                        <div class="jeffreys-title"><span style="font-size: 1.2rem; margin-right: 5px;">🎯</span> Mode Metadata & Quality Metrics</div>
+                        <div id="mode-metadata-body" style="font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.4; margin-top: 8px; overflow-x: auto; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 4px;">
+                            <div style="color:#a4b0be">
+                                <table style="width: 100%; border-collapse: collapse; text-align: left;">
+                                    <thead>
+                                        <tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">
+                                            <th style="padding: 4px; color: #00d2d3;">Mode</th>
+                                            <th style="padding: 4px; color: #00d2d3;">Viability</th>
+                                            <th style="padding: 4px; color: #00d2d3;">Stability</th>
+                                            <th style="padding: 4px; color: #00d2d3;">Surrogate Hit %</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="mode-metadata-tbody">
+                                        <tr><td colspan="4" style="padding: 4px; color: #a4b0be;">No mode metadata available.</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Surrogate Usage Card -->
+                    <div class="evidence-math" id="surrogate-usage-card" style="margin-top: 15px; position: relative; display: none;">
+                        <div class="jeffreys-title"><span style="font-size: 1.2rem; margin-right: 5px;">⚙️</span> Surrogate Model Performance</div>
+                        <div id="surrogate-usage-body" style="font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.5; margin-top: 8px; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 4px;">
+                            <div style="color:#a4b0be">
+                                <div>Total Evaluations Bypassed: <span id="surrogate-total-evals" style="color: #00d2d3; font-weight: bold;">-</span></div>
+                                <div>Global Hit Rate: <span id="surrogate-global-rate" style="color: #ff9f43; font-weight: bold;">-</span></div>
+                                <div style="margin-top: 6px; font-size: 0.75rem; color: #a4b0be; line-height: 1.4;">
+                                    Note: Surrogate is disabled during MCMC/evidence phases to prevent bias in posterior estimation.
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1398,6 +1515,7 @@
         </div>
     </div>
 
-    <script src="index.js"></script>
+    <!-- index.js at end of body with defer: parsed after DOM, executed after DOMContentLoaded -->
+    <script src="index.js" defer></script>
 </body>
 </html>

@@ -1,0 +1,12 @@
+output: chains/test
+likelihood:
+  planck_2018_lowl.TT: null
+params:
+  H0: {prior: {min: 60, max: 80}, ref: 67.4}
+theory:
+  classy:
+    extra_args:
+      non_linear: halofit
+      use_prtoe: no
+sampler:
+  polychord: {nlive: 10}

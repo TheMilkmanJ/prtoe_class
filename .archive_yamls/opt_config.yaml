@@ -1,5 +1,5 @@
 debug: true
-output: chains/prtoe_poly
+output: chains/prtoe_opt
 likelihood:
   planck_2018_lowl.TT: null
   planck_2018_lowl.EE: null
@@ -12,16 +12,16 @@ likelihood:
   sn.pantheonplusshoes: null
 theory:
   classy:
-    path: /home/themilkmanj/prtoe_class
     stop_at_error: false
     extra_args:
       use_prtoe: 'yes'
       non_linear: halofit
       output: mPk,tCl,pCl,lCl
-      modes: s
       N_ur: 2.0328
       N_ncdm: 1
       T_ncdm: 0.71611
+      base_path: /home/themilkmanj/prtoe_class
+    path: /home/themilkmanj/prtoe_class
 params:
   omega_b:
     prior:
@@ -126,5 +126,6 @@ params:
 sampler:
   polychord:
     nlive: 200
-    num_repeats: 80
+    nprior: 1200
+    num_repeats: 10
     precision_criterion: 0.001

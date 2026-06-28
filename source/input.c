@@ -3418,7 +3418,7 @@ int input_read_parameters_species(struct file_content * pfc,
 
   if (pba->use_prtoe == _TRUE_) {
     /* Scale V0 and m to CLASS internal units (H0-normalized) */
-    pba->V0_prtoe = 3.0 * pba->V0_prtoe * pba->H0 * pba->H0;
+    pba->V0_prtoe = pba->V0_prtoe * pba->H0 * pba->H0;
     pba->m_prtoe  = pba->m_prtoe * pba->H0;
     
     /* Convert M_ew_prtoe from GeV to CLASS units (Mpc^-1) */

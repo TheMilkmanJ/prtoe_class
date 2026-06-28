@@ -26,6 +26,7 @@ print(''.join(secrets.choice(alphabet) for _ in range(12)))
     echo ""
     echo "   (Enter these when your browser prompts for login.)"
     echo "==========================================================================="
+    mkdir -p "$(pwd)/chains"
     echo "$DASHBOARD_PASS" > "$(pwd)/chains/dashboard_credentials.txt"
     chmod 600 "$(pwd)/chains/dashboard_credentials.txt" 2>/dev/null || true
 fi
@@ -39,7 +40,7 @@ docker build -t cosmic-dashboard .
 echo "Starting backend server..."
 docker stop cosmic-backend >/dev/null 2>&1 || true
 docker rm cosmic-backend >/dev/null 2>&1 || true
-docker run -d --name cosmic-backend -p 8000:8000 -v "$(pwd)/chains:/app/chains" cosmic-dashboard
+docker run -d --name cosmic-backend -p 8000:8000 -e DASHBOARD_USER -e DASHBOARD_PASS -v "$(pwd)/chains:/app/chains" cosmic-dashboard
 
 echo "Waiting for server to start..."
 sleep 5

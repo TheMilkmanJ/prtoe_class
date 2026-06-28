@@ -5,10 +5,9 @@
 # This file provides concrete, copy-pasteable examples of model-agnostic physical 
 # constraints for several popular non-standard cosmological models.
 #
-# Add these blocks to the top level of your Cobaya configuration YAML files.
-# The hybrid optimizer (run_optimizer.py) will automatically parse these, 
-# enforce early zero-cost rejections, apply graduated quadratic penalties, 
-# and calculate a live "Physical Viability Score" (0-100%) in the dashboard.
+# IMPORTANT: The optimizer reads the "physical_constraints" key (singular).
+# Uncomment the section for your model and ensure it uses the key "physical_constraints".
+# Only one section should be active at a time.
 #
 # ==============================================================================
 
@@ -20,27 +19,29 @@
 #
 # Physical constraints prevent unphysically large EDE fractions that would ruin
 # CMB/LSS fitting, or critical redshifts that lie outside the radiation era.
-physical_constraints_ede:
-  # Peak EDE fraction must be within a reasonable physical range (0.02 to 0.20)
-  - name: "ede_fraction_limit"
-    expression: "f_EDE"
-    min: 0.01
-    max: 0.25
-    weight: 1000.0
-
-  # Critical redshift (log10(z_c)) must lie in the radiation era (3.0 to 4.5)
-  - name: "ede_critical_redshift"
-    expression: "log10z_c"
-    min: 3.2
-    max: 4.2
-    weight: 500.0
-
-  # Combined constraint: ensure EDE field doesn't decay too slowly (theta_i)
-  - name: "ede_initial_theta"
-    expression: "theta_i_ede"
-    min: 0.1
-    max: 3.1416
-    weight: 100.0
+# Uncomment the block below to use EDE constraints:
+#
+# physical_constraints:
+#   # Peak EDE fraction must be within a reasonable physical range (0.02 to 0.20)
+#   - name: "ede_fraction_limit"
+#     expression: "f_EDE"
+#     min: 0.01
+#     max: 0.25
+#     weight: 1000.0
+#
+#   # Critical redshift (log10(z_c)) must lie in the radiation era (3.0 to 4.5)
+#   - name: "ede_critical_redshift"
+#     expression: "log10z_c"
+#     min: 3.2
+#     max: 4.2
+#     weight: 500.0
+#
+#   # Combined constraint: ensure EDE field doesn't decay too slowly (theta_i)
+#   - name: "ede_initial_theta"
+#     expression: "theta_i_ede"
+#     min: 0.1
+#     max: 3.1416
+#     weight: 100.0
 
 
 # ------------------------------------------------------------------------------
@@ -51,20 +52,22 @@ physical_constraints_ede:
 #
 # Physical constraints enforce astrophysical bounds (such as stellar cooling
 # limits and Lyman-alpha forest constraints on the axion mass).
-physical_constraints_axion:
-  # Axion mass log10(m_a/eV) must be heavy enough to avoid Lyman-alpha constraints
-  - name: "axion_mass_lyman_limit"
-    expression: "log10m_axion"
-    min: -22.0
-    max: -18.0
-    weight: 300.0
-
-  # relic density of axions must not exceed the total DM density (derived check)
-  - name: "axion_relic_density"
-    derived: "omega_axion"
-    min: 0.0
-    max: 0.125
-    weight: 800.0
+# Uncomment the block below to use Axion constraints:
+#
+# physical_constraints:
+#   # Axion mass log10(m_a/eV) must be heavy enough to avoid Lyman-alpha constraints
+#   - name: "axion_mass_lyman_limit"
+#     expression: "log10m_axion"
+#     min: -22.0
+#     max: -18.0
+#     weight: 300.0
+#
+#   # relic density of axions must not exceed the total DM density (derived check)
+#   - name: "axion_relic_density"
+#     derived: "omega_axion"
+#     min: 0.0
+#     max: 0.125
+#     weight: 800.0
 
 
 # ------------------------------------------------------------------------------
@@ -75,20 +78,22 @@ physical_constraints_axion:
 #
 # Physical constraints prevent solar system screening violations (f_R0 < 1e-5)
 # and ensure the model does not suffer from tachyonic instabilities.
-physical_constraints_fr:
-  # Solar system tests require the Compton parameter log10(|f_R0|) < -5.0
-  - name: "fr0_screening_limit"
-    expression: "log10_fr0"
-    min: -8.0
-    max: -5.0
-    weight: 500.0
-
-  # Ensure the background expansion does not deviate too much from LCDM (H0 check)
-  - name: "fr_background_h0"
-    expression: "H0"
-    min: 65.0
-    max: 75.0
-    weight: 100.0
+# Uncomment the block below to use f(R) constraints:
+#
+# physical_constraints:
+#   # Solar system tests require the Compton parameter log10(|f_R0|) < -5.0
+#   - name: "fr0_screening_limit"
+#     expression: "log10_fr0"
+#     min: -8.0
+#     max: -5.0
+#     weight: 500.0
+#
+#   # Ensure the background expansion does not deviate too much from LCDM (H0 check)
+#   - name: "fr_background_h0"
+#     expression: "H0"
+#     min: 65.0
+#     max: 75.0
+#     weight: 100.0
 
 
 # ------------------------------------------------------------------------------
@@ -99,17 +104,19 @@ physical_constraints_fr:
 #
 # Physical constraints limit the decay rate (Gamma) to ensure enough dark matter
 # survives to form galaxies.
-physical_constraints_ddm:
-  # Decay rate log10(Gamma / Gyr^-1) must be small enough (DM must be stable enough)
-  - name: "ddm_decay_rate_limit"
-    expression: "log10_decay_rate"
-    min: -5.0
-    max: -1.0
-    weight: 600.0
-
-  # Derived check: fraction of decayed dark matter today must be less than 10%
-  - name: "ddm_decayed_fraction"
-    derived: "f_decayed"
-    min: 0.0
-    max: 0.10
-    weight: 1000.0
+# Uncomment the block below to use DDM constraints:
+#
+# physical_constraints:
+#   # Decay rate log10(Gamma / Gyr^-1) must be small enough (DM must be stable enough)
+#   - name: "ddm_decay_rate_limit"
+#     expression: "log10_decay_rate"
+#     min: -5.0
+#     max: -1.0
+#     weight: 600.0
+#
+#   # Derived check: fraction of decayed dark matter today must be less than 10%
+#   - name: "ddm_decayed_fraction"
+#     derived: "f_decayed"
+#     min: 0.0
+#     max: 0.10
+#     weight: 1000.0

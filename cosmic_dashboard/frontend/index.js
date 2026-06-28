@@ -41,6 +41,7 @@ const btnStartOpt = document.getElementById('btn-start-opt');
 const btnLoadLastRun = document.getElementById('btn-load-last-run');
 const btnResume = document.getElementById('btn-resume');
 const btnStop = document.getElementById('btn-stop');
+const btnApplyCosmicForge = document.getElementById('btn-apply-cosmicforge');
 const btnDownload = document.getElementById('btn-download');
 
 // Abort confirmation modal elements
@@ -1723,6 +1724,67 @@ if (btnStartProfile) {
     });
 }
 btnResume.addEventListener('click', () => triggerRun(false));
+
+// Apply CosmicForge toggle - smart config mapping
+if (btnApplyCosmicForge) {
+    btnApplyCosmicForge.addEventListener('click', async () => {
+        const configSelect = document.getElementById('select-config-template');
+        if (!configSelect) {
+            appendLog('[CosmicForge] Error: Config selector not found');
+            return;
+        }
+        
+        const selectedValue = configSelect.value;
+        let cosmicForgeConfig = null;
+        
+        // Smart mapping: map selected config to CosmicForge version
+        switch(selectedValue) {
+            case 'prtoe_standard':
+                cosmicForgeConfig = 'cosmic_dashboard/scripts/prtoe_standard_cosmicforge.yaml';
+                break;
+            case 'lcdm_baseline':
+            case 'lcdm_config':
+                cosmicForgeConfig = 'cosmic_dashboard/scripts/lcdm_config_cosmicforge.yaml';
+                break;
+            default:
+                appendLog('[CosmicForge] Please select a valid preset config first (PRTOE Standard or ΛCDM Baseline)');
+                return;
+        }
+        
+        try {
+            appendLog(`[CosmicForge] Applying CosmicForge settings for ${selectedValue}...`);
+            
+            const response = await fetch(`${API_URL}/api/templates/load`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    name: 'custom',
+                    yaml_content: cosmicForgeConfig
+                })
+            });
+            
+            if (!response.ok) {
+                throw new Error(`Failed to load: ${response.status}`);
+            }
+            
+            const result = await response.json();
+            appendLog(`✅ ${result.message}`);
+            appendLog(`[CosmicForge] Ready to start with CosmicForge-optimized ${selectedValue} config`);
+            
+            // Update active config display
+            activeConfig = cosmicForgeConfig;
+            if (yamlName) {
+                yamlName.textContent = `Active Config: ${cosmicForgeConfig}`;
+            }
+            
+            // Refresh config display
+            setTimeout(fetchConfigFile, 500);
+            
+        } catch (error) {
+            appendLog(`[CosmicForge] Error: ${error.message}`);
+        }
+    });
+}
 
 // Load Last Run Configuration
 if (btnLoadLastRun) {
@@ -3450,6 +3512,47 @@ ${strugglesText}`;
                 });
             }
 
+            // CosmicForge Optimizer Run Results
+            let cosmicforgeSection = "CosmicForge optimizer not active (standard PolyChord/MCMC run).";
+            if (lastStatusData.is_optimizer) {
+                const totalRuns = lastStatusData.optimizer_total_runs || 0;
+                const currentRun = lastStatusData.optimizer_current_run || 0;
+                const runResults = lastStatusData.optimizer_run_results || [];
+                const totalEvals = lastStatusData.dead_points || 0;
+
+                let runTable = "";
+                if (runResults.length > 0) {
+                    // Sort by chi2 ascending so best is first
+                    const sorted = [...runResults].sort((a, b) => a.chi2 - b.chi2);
+                    const globalBest = sorted[0].chi2;
+                    runTable = "Completed runs (sorted best → worst):\n";
+                    runResults.forEach(r => {
+                        const label = r.label || r.name || `Run ${r.run}`;
+                        const isBest = Math.abs(r.chi2 - globalBest) < 1e-3;
+                        runTable += `- ${label}: χ² = ${r.chi2.toFixed(4)}${isBest ? ' ⭐ GLOBAL BEST' : ''}\n`;
+                    });
+                } else {
+                    runTable = "No completed optimizer runs yet (first evaluation in progress).\n";
+                }
+
+                const phaseLabel = currentRun > 0 && currentRun <= totalRuns
+                    ? `Run ${currentRun}/${totalRuns} in progress`
+                    : (totalRuns > 0 ? `All ${totalRuns} runs complete` : "Initializing...");
+
+                const viabilityInfo = lastStatusData.run_health
+                    ? `- CLASS Boltzmann Stability: ${lastStatusData.run_health.stability_percent !== undefined ? lastStatusData.run_health.stability_percent.toFixed(1) + '%' : 'N/A'}`
+                    : '';
+
+                cosmicforgeSection = `CosmicForge Multi-Start BOBYQA Optimizer:
+- Phase: ${phaseLabel}
+- Total function evaluations: ${totalEvals}
+- Config: ${lastStatusData.active_yaml_path || 'prtoe_standard.yaml'}
+${viabilityInfo}
+
+${runTable}
+- Global best χ² (across all runs): ${lastStatusData.best_chi2 !== null ? lastStatusData.best_chi2.toFixed(4) : 'N/A'}`;
+            }
+
             const promptText = `Here is the cosmological data from my CLASS & Cobaya run. Please analyze these diagnostics, evaluate if the custom model resolves the H0 and S8 tensions, check the model struggles/stability, and explain the physical implications:
 
 ### Run Status
@@ -3513,6 +3616,9 @@ ${classErrorLogsText}
 ${tensionVal}
 - Struggles (Boltzmann Solver Failures): ${strugglesText}
 
+### CosmicForge Optimizer Run Results
+${cosmicforgeSection}
+
 ### Best-Fit Chi2 Breakdown
 - Total Chi2: ${chi2Total}
 - CMB Chi2: ${chi2Cmb}
@@ -3529,6 +3635,108 @@ ${bestFitList}
 ${constraintsList}`;
 
             copyToClipboard(promptText, 'btn-copy-ai-prompt');
+        });
+    }
+
+    // 🌌 Dedicated CosmicForge Optimizer AI Prompt
+    const btnCopyAiCosmicforge = document.getElementById('btn-copy-ai-cosmicforge');
+    if (btnCopyAiCosmicforge) {
+        btnCopyAiCosmicforge.addEventListener('click', () => {
+            if (!lastStatusData) {
+                alert('No run data available yet. Start a CosmicForge optimizer run first.');
+                return;
+            }
+
+            const isOpt = lastStatusData.is_optimizer;
+            const runResults = lastStatusData.optimizer_run_results || [];
+            const totalRuns = lastStatusData.optimizer_total_runs || 0;
+            const currentRun = lastStatusData.optimizer_current_run || 0;
+            const totalEvals = lastStatusData.dead_points || 0;
+            const bestChi2 = lastStatusData.best_chi2;
+            const bestParams = lastStatusData.best_raw_params || {};
+
+            // Build sorted run table
+            let runTableStr = '';
+            if (runResults.length > 0) {
+                const sorted = [...runResults].sort((a, b) => a.chi2 - b.chi2);
+                const globalBest = sorted[0].chi2;
+                sorted.forEach((r, i) => {
+                    const label = r.label || r.name || `Run ${r.run}`;
+                    const isBest = Math.abs(r.chi2 - globalBest) < 1e-3;
+                    runTableStr += `${i + 1}. ${label}: χ² = ${r.chi2.toFixed(4)}${isBest ? ' ← GLOBAL BEST' : ''}\n`;
+                });
+            } else {
+                runTableStr = 'No completed runs yet — optimizer is still on the first run.\n';
+            }
+
+            // Build best-fit params
+            let bestParamStr = '';
+            for (const [key, val] of Object.entries(bestParams)) {
+                if (!key.startsWith('chi2__') && !key.startsWith('minuslogprior')) {
+                    bestParamStr += `  ${key} = ${typeof val === 'number' ? val.toPrecision(7) : val}\n`;
+                }
+            }
+            if (!bestParamStr) bestParamStr = '  (Not yet determined — run still in progress)\n';
+
+            // Chi2 per probe from most recent eval (if available in run log)
+            const chi2Cmb = lastStatusData.best_cmb;
+            const chi2Bao = lastStatusData.best_bao;
+            const chi2Sn = lastStatusData.best_sn;
+            const chi2Lensing = lastStatusData.best_lensing;
+            const chi2Desi = lastStatusData.best_desi;
+
+            const probeBreakdown = [
+                chi2Cmb !== null && chi2Cmb !== undefined ? `  CMB (Planck 2018): χ² = ${chi2Cmb.toFixed(2)}` : null,
+                chi2Bao !== null && chi2Bao !== undefined ? `  BAO (6dF+SDSS+DESI): χ² = ${chi2Bao.toFixed(2)}` : null,
+                chi2Sn !== null && chi2Sn !== undefined ? `  SN (Pantheon+SH0ES): χ² = ${chi2Sn.toFixed(2)}` : null,
+                chi2Lensing !== null && chi2Lensing !== undefined ? `  CMB Lensing: χ² = ${chi2Lensing.toFixed(2)}` : null,
+                chi2Desi !== null && chi2Desi !== undefined ? `  DESI BAO: χ² = ${chi2Desi.toFixed(2)}` : null,
+            ].filter(Boolean).join('\n');
+
+            const tensionInfo = lastStatusData.tensions
+                ? `- H0 tension: ${lastStatusData.tensions.H0_status || 'Unknown'} (${lastStatusData.tensions.H0_tension !== null ? lastStatusData.tensions.H0_tension.toFixed(2) + 'σ' : '?'} vs SH0ES R22)
+- S8 tension: ${lastStatusData.tensions.S8_status || 'Unknown'} (KiDS: ${lastStatusData.tensions.S8_tension_kids !== null ? lastStatusData.tensions.S8_tension_kids.toFixed(2) + 'σ' : '?'}, DES: ${lastStatusData.tensions.S8_tension_des !== null ? lastStatusData.tensions.S8_tension_des.toFixed(2) + 'σ' : '?'})
+- Overall: ${lastStatusData.tension_status || 'Unknown'}`
+                : 'Tension data not yet computed.';
+
+            const cosmicforgePrompt = `=== CosmicForge Multi-Start BOBYQA Optimization Results ===
+Model: PRTOE (Phantom Rip Theory of Everything)
+Config: ${lastStatusData.active_yaml_path || 'prtoe_standard.yaml'}
+Run status: ${lastStatusData.status || 'unknown'}
+Optimizer: Multi-start BOBYQA (${isOpt ? 'Active' : 'Standard/PolyChord run, optimizer inactive'})
+
+--- MULTI-START RUN SUMMARY (${runResults.length} of ${totalRuns} runs finished) ---
+Current phase: Run ${currentRun}/${totalRuns}
+Total BOBYQA function evaluations: ${totalEvals}
+
+${runTableStr}
+--- GLOBAL BEST FIT ---
+Global best χ² total: ${bestChi2 !== null && bestChi2 !== undefined ? bestChi2.toFixed(4) : 'In progress...'}
+
+Per-probe χ² breakdown at best-fit:
+${probeBreakdown || '  (Full breakdown not available at this checkpoint — requires a finished run)'}
+
+Best-fit parameter values:
+${bestParamStr}
+--- COSMOLOGICAL TENSION STATUS ---
+${tensionInfo}
+
+--- ANALYSIS REQUESTED ---
+Please analyze the following aspects of this PRTOE cosmological optimization:
+
+1. BOBYQA CONVERGENCE: Does the spread in χ² values across the multi-start runs (see table above) suggest the optimizer has found a true global minimum, or are multiple local minima competing? What does the χ² difference between best and worst runs tell us about the likelihood landscape topology?
+
+2. PRTOE PARAMETER INTERPRETATION: Given the best-fit values for xi_prtoe, zeta_prtoe, V0_prtoe, and the other PRTOE-specific parameters, what do these imply physically? Is the PRTOE coupling (xi, zeta) consistent with observational bounds from other experiments?
+
+3. χ² ASSESSMENT: The global best χ² = ${bestChi2 !== null && bestChi2 !== undefined ? bestChi2.toFixed(4) : 'N/A'}. For context, ΛCDM typically achieves χ² ≈ 2510–2520 on Planck+BAO+SN. Is this improvement statistically significant? What Δχ² threshold matters here given the extra PRTOE degrees of freedom?
+
+4. TENSION RESOLUTION: Based on the best-fit parameters (H0, omega_cdm, S8 via sigma8 and omega_m), does PRTOE reduce the H0 tension vs SH0ES and the S8 tension vs KiDS/DES? By how many sigma?
+
+5. NEXT STEPS: Given these optimizer results, what would you recommend as the next scientific step — a full PolyChord nested sampling run to get Bayesian evidence log(Z), targeted MCMC for posteriors, or further seeded multistart optimization?
+
+Provide a concise but rigorous analysis suitable for inclusion in a cosmology paper methods section.`;
+
+            copyToClipboard(cosmicforgePrompt, 'btn-copy-ai-cosmicforge');
         });
     }
 
@@ -3608,20 +3816,46 @@ Delta logZ: ${delta}
 
 Best-fit params: ${lastStatusData.best_raw_params ? JSON.stringify(lastStatusData.best_raw_params) : 'N/A'}`;
 
-            // Targeted stacking prompt (already built in its handler, but duplicate here for all)
+            // Targeted stacking prompt
             const stackingPrompt = `Stacking-specific: Given the weights and the run data above, optimize and justify the ensemble predictive distribution vs picking one model. How does this change conclusions about PRTOE vs LCDM?`;
 
             // Savage specific
             const savagePrompt = `Savage-Dickey-specific: Using the BF and the context, compute and interpret the exact evidence for the extra parameters. Contrast to what BIC would say (BIC would penalize the extra params heavily even if the posterior at 0 is tiny). Provide ready-to-paste LaTeX.`;
 
-            // Paper writing prompt (new)
+            // CosmicForge optimizer prompt (new — includes multistart run table)
+            const cfRunResults = lastStatusData.optimizer_run_results || [];
+            let cfRunTableStr = '';
+            if (cfRunResults.length > 0) {
+                const cfSorted = [...cfRunResults].sort((a, b) => a.chi2 - b.chi2);
+                const cfBest = cfSorted[0].chi2;
+                cfSorted.forEach((r, i) => {
+                    const lbl = r.label || r.name || `Run ${r.run}`;
+                    cfRunTableStr += `${i+1}. ${lbl}: χ² = ${r.chi2.toFixed(4)}${Math.abs(r.chi2 - cfBest) < 1e-3 ? ' ← GLOBAL BEST' : ''}\n`;
+                });
+            } else {
+                cfRunTableStr = lastStatusData.is_optimizer
+                    ? 'Optimizer active — first run not yet finished.\n'
+                    : 'Not an optimizer run (PolyChord/MCMC mode).\n';
+            }
+            const cosmicforgeAllPrompt = `=== CosmicForge BOBYQA Optimizer Results ===
+Config: ${lastStatusData.active_yaml_path || 'prtoe_standard.yaml'}
+Status: ${lastStatusData.status || 'unknown'} | Runs: ${lastStatusData.optimizer_current_run || 0}/${lastStatusData.optimizer_total_runs || 0} | Evals: ${lastStatusData.dead_points || 0}
+
+Multi-start run χ² table (sorted best→worst):
+${cfRunTableStr}
+Global best χ²: ${lastStatusData.best_chi2 !== null && lastStatusData.best_chi2 !== undefined ? lastStatusData.best_chi2.toFixed(4) : 'N/A'}
+Best-fit params: ${lastStatusData.best_raw_params ? JSON.stringify(lastStatusData.best_raw_params, null, 2) : 'N/A'}
+
+Analyze convergence, PRTOE parameter significance, tension resolution, and recommend next steps.`;
+
+            // Paper writing prompt
             const paperPrompt = `You are helping write a cosmology paper. Given ALL the above dashboard output (evidence, PSIS-LOO with k diagnostics, stacking weights, Savage-Dickey BFs, tensions resolved or not, PPC p-values, best-fit, provenance), draft:
 1. A 250-word abstract highlighting how the full Bayesian toolkit (not AIC/BIC) shows the result.
 2. A paragraph for the model selection section explaining why we use PSIS-LOO + stacking + Savage-Dickey instead of BIC.
 3. Suggested table captions and figure ideas for the new metrics (e.g. "Pareto k per probe for the PRTOE run").
 Use exact numbers from the data. Be precise and cite the methods (Vehtari PSIS, Yao stacking, Dickey-Savage).`;
 
-            // Full context / all-in-one for multi-turn
+            // Full context
             const fullContextPrompt = `FULL SESSION CONTEXT FOR AI (paste this first in a new chat):
 [All the diagnostic + advanced + phone + new features note from above, plus the entire scraped run state from the main diagnostic prompt.]
 
@@ -3636,13 +3870,16 @@ ${stackingPrompt}
 === PROMPT 3: SAVAGE-DICKEY NESTED ===
 ${savagePrompt}
 
-=== PROMPT 4: PAPER WRITING AID ===
+=== PROMPT 4: COSMICFORGE OPTIMIZER RESULTS ===
+${cosmicforgeAllPrompt}
+
+=== PROMPT 5: PAPER WRITING AID ===
 ${paperPrompt}
 
-=== PROMPT 5: FULL MULTI-TURN CONTEXT ===
+=== PROMPT 6: FULL MULTI-TURN CONTEXT ===
 ${fullContextPrompt}
 
---- End of All AI Prompts from CosmicDashboard. Use sequentially in your AI (e.g. Gemini/Claude) for best results. All new features (PSIS-LOO k, Stacking, Savage-Dickey, phone robustness, etc.) are included above.`;
+--- End of All AI Prompts from CosmicDashboard. Use sequentially in your AI (e.g. Gemini/Claude) for best results. All new features (PSIS-LOO k, Stacking, Savage-Dickey, CosmicForge optimizer, phone robustness, etc.) are included above.`;
 
             copyToClipboard(allPrompts, 'btn-copy-all-ai-prompts');
         });

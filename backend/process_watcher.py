@@ -48,9 +48,25 @@ def _get_backend():
     """
     global _backend_cache
     if _backend_cache is None:
-        _backend_cache = __import__(
-            "prtoe_class.scripts.cosmo_dashboard_backend", fromlist=["*"]
-        )
+        import sys
+        names_to_check = ['__main__', 'cosmo_dashboard_backend', 'scripts.cosmo_dashboard_backend', 'prtoe_class.scripts.cosmo_dashboard_backend']
+        matched_name = None
+        for name in names_to_check:
+            mod = sys.modules.get(name)
+            if mod:
+                has_st = hasattr(mod, 'state')
+                logger.info(f"[process_watcher] Found sys.modules key '{name}', hasattr(state)={has_st}, id(mod)={id(mod)}")
+                if has_st:
+                    _backend_cache = mod
+                    matched_name = name
+                    break
+        if _backend_cache is None:
+            logger.info("[process_watcher] No module in sys.modules had 'state'. Falling back to __import__.")
+            _backend_cache = __import__(
+                "prtoe_class.scripts.cosmo_dashboard_backend", fromlist=["*"]
+            )
+            matched_name = "imported_fallback"
+        logger.info(f"[process_watcher] _get_backend resolved to '{matched_name}', id(state)={id(getattr(_backend_cache, 'state', None))}")
     return _backend_cache
 
 
@@ -149,6 +165,11 @@ def find_and_adopt_running_cobaya():
 
     for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time']):
         try:
+            # Skip launcher shell wrapper processes
+            proc_name = (proc.info.get('name') or '').lower()
+            if proc_name in ('bash', 'sh', 'zsh', 'dash', 'tmux', 'screen'):
+                continue
+
             cmdline = proc.info.get('cmdline') or []
             if not cmdline:
                 continue
@@ -195,32 +216,29 @@ def find_and_adopt_running_cobaya():
                 f"  [Candidate {i+1}] Priority={priority}, PID={proc.info['pid']}, Type={run_type}, Config={yaml_file}",
                 console=True
             )
-    else:
-        # Debug: log that no processes were detected
-        backend.log_dashboard_error(
-            "  [Process Watcher] No running Cobaya/CosmicForge processes detected",
-            console=True
-        )
         
         priority, proc, yaml_file, is_optimizer = candidates[0]
 
         pid = proc.info['pid']
         # FIX: Resolve YAML path to absolute, trying common locations
-        yaml_path = Path(yaml_file)
-        if not yaml_path.is_absolute():
-            # If it already starts with prtoe_class/, use it as-is from repo root
-            if str(yaml_path).startswith('prtoe_class/'):
-                yaml_path = Path('/home/themilkmanj') / yaml_path
-            else:
-                # Try relative to prtoe_class directory
-                prtoe_path = Path('/home/themilkmanj/prtoe_class') / yaml_file
-                if prtoe_path.exists():
-                    yaml_path = prtoe_path
+        yaml_path = None
+        if yaml_file:
+            yaml_path = Path(yaml_file)
+            if not yaml_path.is_absolute():
+                # If it already starts with prtoe_class/, use it as-is from repo root
+                if str(yaml_path).startswith('prtoe_class/'):
+                    yaml_path = Path('/home/themilkmanj') / yaml_path
                 else:
-                    # Fall back to relative to cwd or as-is
-                    yaml_path = Path.cwd() / yaml_file
+                    # Try relative to prtoe_class directory
+                    prtoe_path = Path('/home/themilkmanj/prtoe_class') / yaml_file
+                    if prtoe_path.exists():
+                        yaml_path = prtoe_path
+                    else:
+                        # Fall back to relative to cwd or as-is
+                        yaml_path = Path.cwd() / yaml_file
+        
         state.running_process = AdoptedProcess(pid)
-        state.active_yaml_path = str(yaml_path)
+        state.active_yaml_path = str(yaml_path) if yaml_path else ""
         state.active_output_prefix = backend.get_output_prefix_from_yaml(
             state.active_yaml_path
         )
@@ -234,6 +252,12 @@ def find_and_adopt_running_cobaya():
             f"Config: {yaml_file} → {state.active_yaml_path}, "
             f"Output Prefix: {state.active_output_prefix}, "
             f"is_optimizer={is_optimizer}",
+            console=True
+        )
+    else:
+        # Debug: log that no processes were detected
+        backend.log_dashboard_error(
+            "  [Process Watcher] No running Cobaya/CosmicForge processes detected",
             console=True
         )
 

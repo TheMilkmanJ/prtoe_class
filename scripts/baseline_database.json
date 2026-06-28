@@ -1,6 +1,8 @@
 {
     "planck_bao_pantheonplus_shoes": {
-        "log_evidence": -2902.945708161032,
-        "best_chi2": 2790.27754809466
+        "log_evidence": -1350.4257,
+        "best_chi2": 1261.711592096296,
+        "evidence_is_final": true,
+        "evidence_source": "polychord_stats"
     }
 }

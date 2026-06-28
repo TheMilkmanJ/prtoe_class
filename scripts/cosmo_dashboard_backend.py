@@ -3301,7 +3301,9 @@ async def get_status():
             evals = get_log_eval_count(f"{state.active_output_prefix}.log")
             stats_data["dead_points"] = evals
 
-        fit_details = None if is_stale else get_best_fit_details(state.active_output_prefix)
+        fit_details = None
+        if not getattr(state, "is_optimizer", False) and not is_stale:
+            fit_details = get_best_fit_details(state.active_output_prefix)
         if fit_details is not None:
             stats_data["best_chi2"] = fit_details["total"]
             stats_data["best_cmb"] = fit_details.get("cmb", 0.0)
@@ -3311,6 +3313,61 @@ async def get_status():
             stats_data["best_lensing"] = fit_details.get("lensing", 0.0)
             stats_data["best_other"] = fit_details.get("other", 0.0)
             stats_data["best_raw_params"] = fit_details["raw_params"]
+
+        # BOBYQA OPTIMIZER FIX: Parse the seeded BOBYQA run log for real-time chi2, eval counts,
+        # and best-fit parameters. This covers run_optimizer.py (multistart BOBYQA) runs which
+        # write to chains/seeded_run_phase1.log instead of a .summary.json. We try:
+        #   1. The active_output_prefix .log symlink (prtoe_poly.log)
+        #   2. The explicit seeded_run_phase1.log sidecar file
+        if getattr(state, "is_optimizer", False) and not is_stale:
+            try:
+                from parsers.logs import get_best_fit_from_bobyqa_log
+            except Exception:
+                try:
+                    import importlib.util as _ilu
+                    import pathlib as _pl
+                    _lp = _pl.Path(__file__).resolve().parent / "parsers" / "logs.py"
+                    _spec = _ilu.spec_from_file_location("_bbyq_logs", str(_lp))
+                    _mod = _ilu.module_from_spec(_spec)
+                    _spec.loader.exec_module(_mod)
+                    get_best_fit_from_bobyqa_log = getattr(_mod, "get_best_fit_from_bobyqa_log", None)
+                except Exception:
+                    get_best_fit_from_bobyqa_log = None
+
+            if get_best_fit_from_bobyqa_log is not None:
+                # Candidate log files in priority order
+                bobyqa_log_candidates = []
+                if state.active_output_prefix:
+                    bobyqa_log_candidates.append(f"{state.active_output_prefix}.log")
+                bobyqa_log_candidates.append("chains/seeded_run_phase1.log")
+
+                bobyqa_result = None
+                for _cand in bobyqa_log_candidates:
+                    if Path(_cand).exists():
+                        try:
+                            res_temp = get_best_fit_from_bobyqa_log(_cand, state)
+                            if res_temp and res_temp.get("total_evals", 0) > 0:
+                                bobyqa_result = res_temp
+                                break
+                        except Exception:
+                            pass
+
+                if bobyqa_result:
+                    # Override/supplement stats_data with live BOBYQA values
+                    if bobyqa_result.get("total") is not None:
+                        stats_data["best_chi2"] = bobyqa_result["total"]
+                    if bobyqa_result.get("current_chi2") is not None:
+                        stats_data["current_chi2"] = bobyqa_result["current_chi2"]
+                    if bobyqa_result.get("raw_params"):
+                        stats_data["best_raw_params"] = bobyqa_result["raw_params"]
+                    if bobyqa_result.get("total_evals", 0) > 0:
+                        stats_data["dead_points"] = bobyqa_result["total_evals"]
+                        stats_data["run_health"] = stats_data.get("run_health", {})
+                        stats_data["run_health"]["total_evals"] = bobyqa_result["total_evals"]
+                    # Surface per-run results and progress for the CosmicForge optimizer tab
+                    stats_data["optimizer_run_results"] = bobyqa_result.get("run_results", [])
+                    stats_data["optimizer_current_run"] = bobyqa_result.get("current_run", 0)
+                    stats_data["optimizer_total_runs"] = bobyqa_result.get("total_runs", 0)
 
         # Estimate target dead points based on dimensions and live points (nlive)
         ndims = 8  # Default dimensions for typical cosmological runs
@@ -4002,21 +4059,27 @@ async def get_status():
             # FALLBACK: Parse .txt file if .summary.json doesn't exist (for legacy runs)
             txt_path = Path(f"{state.active_output_prefix}.txt")
             if txt_path.exists():
-                try:
-                    with open(txt_path, 'r') as f:
-                        txt_content = f.read()
-                    # Extract best chi2 from the last line (polyChord output format)
-                    lines = txt_content.strip().split('\n')
-                    if lines:
-                        last_line = lines[-1].split()
-                        if len(last_line) >= 3:
-                            try:
-                                stats_data["best_chi2"] = float(last_line[2])
-                                stats_data["total_evals"] = len(lines) - 1  # Count posterior samples
-                            except (ValueError, IndexError):
-                                pass
-                except Exception as e:
-                    logger.debug(f"Failed to parse optimizer .txt file: {e}")
+                # Avoid stale files from previous runs
+                is_txt_stale = False
+                if state.run_start_time and txt_path.stat().st_mtime < state.run_start_time - 2.0:
+                    is_txt_stale = True
+                
+                if not is_txt_stale:
+                    try:
+                        with open(txt_path, 'r') as f:
+                            txt_content = f.read()
+                        # Extract best chi2 from the last line (polyChord output format)
+                        lines = txt_content.strip().split('\n')
+                        if lines:
+                            last_line = lines[-1].split()
+                            if len(last_line) >= 3:
+                                try:
+                                    stats_data["best_chi2"] = float(last_line[2])
+                                    stats_data["total_evals"] = len(lines) - 1  # Count posterior samples
+                                except (ValueError, IndexError):
+                                    pass
+                    except Exception as e:
+                        logger.debug(f"Failed to parse optimizer .txt file: {e}")
         
         # CRITICAL FIX 5: Load mode metadata in real-time for live tracker display
         modes_path = Path(f"{state.active_output_prefix}.modes.json")
@@ -8175,6 +8238,7 @@ class TemplateSaveRequest(BaseModel):
 
 class TemplateLoadRequest(BaseModel):
     name: str
+    yaml_content: Optional[str] = None
 
 @app.get("/api/templates/list")
 async def list_templates():
@@ -8347,18 +8411,42 @@ async def save_template(req: TemplateSaveRequest):
 
 @app.post("/api/templates/load")
 async def load_template(req: TemplateLoadRequest):
-    templates_dir = Path("templates")
-    clean_name = re.sub(r'[^a-zA-Z0-9_\-]', '', req.name)
-    template_path = templates_dir / f"{clean_name}.yaml"
+    # If yaml_content is provided, use it directly (for CosmicForge configs)
+    if req.yaml_content:
+        target_path = Path("uploaded_config.yaml")
+        try:
+            # yaml_content might be a path to a file (relative to repo root)
+            source_path = Path("/home/themilkmanj/prtoe_class") / req.yaml_content
+            if source_path.exists():
+                shutil.copy2(source_path, target_path)
+                content = source_path.read_text()
+            else:
+                # Try relative to current working directory
+                source_path = Path(req.yaml_content)
+                if source_path.exists():
+                    shutil.copy2(source_path, target_path)
+                    content = source_path.read_text()
+                else:
+                    # It's actual YAML content
+                    target_path.write_text(req.yaml_content)
+                    content = req.yaml_content
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to load CosmicForge config: {e}")
+    else:
+        # Original behavior: load from templates directory
+        templates_dir = Path("templates")
+        clean_name = re.sub(r'[^a-zA-Z0-9_\-]', '', req.name)
+        template_path = templates_dir / f"{clean_name}.yaml"
 
-    if not template_path.exists():
-        raise HTTPException(status_code=404, detail=f"Template '{req.name}' not found.")
+        if not template_path.exists():
+            raise HTTPException(status_code=404, detail=f"Template '{req.name}' not found.")
 
-    target_path = Path("uploaded_config.yaml")
-    try:
-        shutil.copy2(template_path, target_path)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to load template into uploaded_config.yaml: {e}")
+        target_path = Path("uploaded_config.yaml")
+        try:
+            shutil.copy2(template_path, target_path)
+            content = template_path.read_text()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to load template into uploaded_config.yaml: {e}")
 
     # Ensure CLASS/Cobaya/PolyChord happy on template load too (names, base, halofit)
     try:

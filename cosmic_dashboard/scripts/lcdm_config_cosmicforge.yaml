@@ -1,5 +1,5 @@
 debug: true
-output: chains/prtoe_polychord
+output: chains/lcdm_polychord
 likelihood:
   planck_2018_lowl.TT: null
   planck_2018_lowl.EE: null
@@ -15,7 +15,7 @@ theory:
     path: /home/themilkmanj/prtoe_class
     stop_at_error: false
     extra_args:
-      use_prtoe: 'yes'
+      use_prtoe: 'no'
       non_linear: halofit
       gauge: newtonian
       hyper_flat_approximation_nu: 7000.0
@@ -27,7 +27,8 @@ theory:
       N_ur: 2.0328
       N_ncdm: 1
       T_ncdm: 0.71611
-      base_path: /home/themilkmanj/prtoe_class
+    ignore_obsolete: false
+    use_renames: false
 params:
   omega_b:
     prior:
@@ -76,11 +77,11 @@ params:
     latex: z_\mathrm{reio}
   m_ncdm:
     prior:
-      min: 0.01
+      min: 0.0
       max: 0.5
     ref: 0.06
     proposal: 0.02
-    latex: \sum m_\nu \ [\mathrm{eV}]
+    latex: \sum m_\nu \[\mathrm{eV}\]
   A_planck:
     prior:
       dist: norm
@@ -89,68 +90,9 @@ params:
     ref: 1.0
     proposal: 0.00025
     latex: A_\mathrm{planck}
-  lambda_prtoe:
-    value: 0.05
-  m_prtoe:
-    value: 0.05
-  delta_prtoe:
-    prior:
-      min: 0.0005
-      max: 0.35
-    ref:
-      dist: norm
-      loc: 0.05
-      scale: 0.05
-    proposal: 0.03
-    latex: \Delta
-  xi_prtoe:
-    prior:
-      min: 1.0e-07
-      max: 1.19e-05
-    ref:
-      dist: norm
-      loc: 5.0e-06
-      scale: 1.0e-06
-    proposal: 8.0e-07
-    latex: \xi
-  log_beta_prtoe:
-    prior:
-      min: -12.0
-      max: -3.0
-    ref: -6.0
-    proposal: 0.2
-    latex: \log_{10}(\beta_\mathrm{prtoe})
-    drop: true
-  beta_prtoe:
-    value: 'lambda log_beta_prtoe: 10**log_beta_prtoe'
-    latex: \beta_\mathrm{prtoe}
-  V0_prtoe:
-    value: 'lambda omega_b, omega_cdm, H0: 1.0 - (omega_b + omega_cdm) / (H0/100.0)**2'
-    latex: V_{0,\mathrm{prtoe}}
-  zeta_prtoe:
-    prior:
-      min: 10.0
-      max: 120.0
-    ref:
-      dist: norm
-      loc: 80.0
-      scale: 20.0
-    proposal: 5.0
-    latex: \zeta_\mathrm{prtoe}
-  sigma8:
-    latex: \sigma_8
-  Omega_m:
-    latex: \Omega_\mathrm{m}
-  S8:
-    derived: 'lambda sigma8, Omega_m: sigma8 * (Omega_m / 0.3)**0.5'
-    latex: S_8
 sampler:
   polychord:
-    nlive: 100
-    num_repeats: 60
-    nprior: 100
-    nfail: 1000000
+    nlive: 200
+    nprior: 800
+    num_repeats: 10
     precision_criterion: 0.01
-    oversample_power: 0
-    synchronous: false
-    measure_speeds: false

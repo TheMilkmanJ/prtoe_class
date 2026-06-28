@@ -107,7 +107,155 @@ def get_best_fit_from_log(log_path, state):
         
     return getattr(state, "best_fit_log_cache", None) if not isinstance(state, dict) else state.get("best_fit_log_cache")
 
+def get_best_fit_from_bobyqa_log(log_path, state):
+    """
+    Parse a BOBYQA/run_optimizer.py log file (seeded_run_phase1.log format) to extract:
+      - current_chi2: the most recent function evaluation value
+      - best_chi2: the global best chi2 across all finished runs
+      - best_params: the parameter dict from the best run (parsed from 'Posterior to be computed' line)
+      - current_run: which run number is currently active (e.g. 6)
+      - total_runs: total number of multi-start runs (e.g. 6)
+      - total_evals: cumulative function evaluations across all runs
+      - run_results: list of {run, label, chi2} for finished runs
+    Returns a dict or None if file not found/empty.
+    """
+    if not log_path or not os.path.exists(log_path):
+        return None
+
+    try:
+        file_size = os.path.getsize(log_path)
+        if file_size == 0:
+            return None
+
+        # Use cached position to avoid re-reading the whole file each time
+        is_dict = isinstance(state, dict)
+        bobyqa_pos = (state.get("bobyqa_log_position", 0) if is_dict
+                      else getattr(state, "bobyqa_log_position", 0))
+        bobyqa_cache = (state.get("bobyqa_cache") if is_dict
+                        else getattr(state, "bobyqa_cache", None))
+
+        if file_size < bobyqa_pos:
+            bobyqa_pos = 0
+            bobyqa_cache = None
+
+        if bobyqa_cache is None:
+            bobyqa_cache = {
+                "global_best_chi2": float("inf"),
+                "global_best_params": None,
+                "run_results": [],
+                "current_run": 0,
+                "total_runs": 0,
+                "total_evals": 0,
+                "current_chi2": None,
+                "last_run_params_pending": False,
+            }
+
+        # Compiled patterns
+        pat_start = re.compile(
+            r"\[optimizer\]\s+---\s+Starting Run\s+(\d+)/(\d+)"
+        )
+        pat_finish = re.compile(
+            r"\[optimizer\]\s+Run\s+(\d+)\s+\(([^)]+)\)\s+finished\.\s+Best Chi2 found in this run:\s+([\d.]+)"
+        )
+        pat_eval = re.compile(
+            r"\[pybobyqa\.util\]\s+Function eval\s+(\d+)\s+at point\s+\d+\s+has f\s+=\s+([\d.eE+\-]+)"
+        )
+        pat_params = re.compile(
+            r"\[model\]\s+Posterior to be computed for parameters\s+(\{.*\})"
+        )
+
+        with open(log_path, "r", errors="ignore") as f:
+            f.seek(bobyqa_pos)
+            for line in f:
+                # Track starting runs
+                m = pat_start.search(line)
+                if m:
+                    bobyqa_cache["current_run"] = int(m.group(1))
+                    bobyqa_cache["total_runs"] = int(m.group(2))
+                    bobyqa_cache["last_run_params_pending"] = False
+                    continue
+
+                # Track function evaluations (current chi2)
+                m = pat_eval.search(line)
+                if m:
+                    bobyqa_cache["total_evals"] += 1
+                    try:
+                        f_val = float(m.group(2))
+                        bobyqa_cache["current_chi2"] = f_val
+                        if f_val < bobyqa_cache["global_best_chi2"]:
+                            bobyqa_cache["global_best_chi2"] = f_val
+                    except (ValueError, TypeError):
+                        pass
+                    continue
+
+                # Track finished runs
+                m = pat_finish.search(line)
+                if m:
+                    run_idx = int(m.group(1))
+                    run_label = m.group(2).strip()
+                    chi2 = float(m.group(3))
+                    bobyqa_cache["run_results"] = [
+                        r for r in bobyqa_cache["run_results"] if r.get("run") != run_idx
+                    ]
+                    bobyqa_cache["run_results"].append({"run": run_idx, "label": run_label, "chi2": chi2})
+                    if chi2 < bobyqa_cache["global_best_chi2"]:
+                        bobyqa_cache["global_best_chi2"] = chi2
+                    bobyqa_cache["last_run_params_pending"] = True
+                    continue
+
+                # Capture params from the line right after a run finishes
+                if bobyqa_cache["last_run_params_pending"]:
+                    m = pat_params.search(line)
+                    if m:
+                        try:
+                            raw = m.group(1)
+                            # Strip np.float64(...) wrappers
+                            raw = re.sub(r"np\.float64\(([^)]+)\)", r"\1", raw)
+                            params = safe_parse_python_dict(raw)
+                            if params:
+                                # Only update global best params if this run's chi2 is the global best
+                                finished_runs = bobyqa_cache["run_results"]
+                                if finished_runs:
+                                    last = finished_runs[-1]
+                                    if abs(last["chi2"] - bobyqa_cache["global_best_chi2"]) < 1e-3:
+                                        bobyqa_cache["global_best_params"] = params
+                        except Exception:
+                            pass
+                        bobyqa_cache["last_run_params_pending"] = False
+
+            new_pos = f.tell()
+
+        if is_dict:
+            state["bobyqa_log_position"] = new_pos
+            state["bobyqa_cache"] = bobyqa_cache
+        else:
+            state.bobyqa_log_position = new_pos
+            state.bobyqa_cache = bobyqa_cache
+
+        best_chi2 = bobyqa_cache["global_best_chi2"]
+        if best_chi2 == float("inf"):
+            best_chi2 = None
+
+        return {
+            "total": best_chi2,
+            "current_chi2": bobyqa_cache["current_chi2"],
+            "raw_params": bobyqa_cache["global_best_params"] or {},
+            "total_evals": bobyqa_cache["total_evals"],
+            "current_run": bobyqa_cache["current_run"],
+            "total_runs": bobyqa_cache["total_runs"],
+            "run_results": bobyqa_cache["run_results"],
+            # Approximate likelihoods as None (BOBYQA doesn't split chi2 by dataset)
+            "cmb": None,
+            "bao": None,
+            "sn": None,
+        }
+
+    except Exception:
+        return None
+
+
 def extract_model_struggles(log_path, state):
+
     """
     Associates CLASS error tracebacks with subsequent evaluation failures on the same MPI rank.
     """

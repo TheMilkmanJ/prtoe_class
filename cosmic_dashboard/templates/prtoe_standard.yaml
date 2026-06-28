@@ -22,6 +22,7 @@ theory:
       N_ur: 2.0328
       N_ncdm: 1
       T_ncdm: 0.71611
+      base_path: /home/themilkmanj/prtoe_class
 params:
   omega_b:
     prior:
@@ -106,7 +107,7 @@ params:
     value: 0.06
     latex: \sum m_\nu \ [\mathrm{eV}]
   beta_prtoe:
-    value: 1.0e-06
+    value: 1.0e-6
     latex: \beta_\mathrm{prtoe}
   M_prtoe:
     value: 100.0

@@ -1,0 +1,1 @@
+{"config_name": "/home/themilkmanj/prtoe_class/lcdm_config.yaml", "cores": 4, "auto_rebuild": false, "force_overwrite": true, "is_optimizer": true, "optimizer_method": "bobyqa", "optimizer_multistart": 4, "optimizer_mcmc_steps": 100, "profile_param": null, "profile_range": null, "profile_steps": 8}

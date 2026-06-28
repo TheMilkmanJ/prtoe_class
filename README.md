@@ -33,7 +33,7 @@ Docker is used under the hood for a clean environment. Your chains and data live
 ### 🎮 Fast Verification (Toy Mode)
 If you want to verify that the entire hybrid optimization, Hessian, MCMC, and surrogate pipeline is working without compiling the full CLASS engine or running a heavy cosmological chain, you can run the toy model test:
 ```bash
-python3 run_optimizer.py --test-toy --multistart 2 --mcmc-steps 20
+python3 run_cosmicforge.py --test-toy --multistart 2 --mcmc-steps 20
 ```
 This runs a 4D multimodal test likelihood in seconds and outputs full diagnostics.
 
@@ -193,7 +193,7 @@ CosmicDashboard now ships a complete production-grade toolkit that replaces poin
   * Perfect for papers/presentations showing how your PRTOE contours tightened or shifted away from ΛCDM as dead points accumulated.
 
 ### Cosmo Optimizer & Parameter Profiling Suite (BOBYQA + MCMC + Profile Likelihood)
-To make model exploration and parameter profiling fast and accessible, CosmicDashboard integrates a custom physics-aware optimization and profiling backend (`run_optimizer.py`):
+To make model exploration and parameter profiling fast and accessible, CosmicDashboard integrates a custom physics-aware optimization and profiling backend (`run_cosmicforge.py`):
 * **Multi-Start Mode Clustering & Ranking:** Run BOBYQA from multiple starting points (Planck-preferred, SH0ES-preferred, strong/weak coupling) to map out the multimodal posterior. The dashboard automatically clusters similar solutions (using a 5% normalized parameter-space distance) and ranks the unique modes by penalized $\chi^2$.
 * **Physical Viability Score (0–100%):** Separates the raw data fit quality ($\chi^2_{\text{raw}}$) from physical sanity. Unphysical regions (like negative $V_0$, unstable age of the universe, or ghost instabilities in the coupling $\xi_{\text{prtoe}}$) are penalized with a smooth, graduated quadratic penalty instead of hard walls, allowing the optimizer to navigate away safely. The resulting viability score is displayed live in the dashboard.
 * **Laplace Uncertainty & MCMC Sampling:** Estimates correlated parameter errors by computing the full Hessian matrix at the best-fit point. It then automatically launches a short Metropolis-Hastings MCMC chain using the inverted Hessian as the proposal covariance, giving you fast, high-quality marginalized posterior contours for GetDist.

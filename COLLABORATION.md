@@ -17,7 +17,7 @@ CosmicDashboard acts as a visual control and diagnostic layer over a state-of-th
 ```mermaid
 graph TD
     UI[CosmicDashboard Web UI] <--> API[FastAPI Backend]
-    API <--> Controller[run_optimizer.py]
+    API <--> Controller[run_cosmicforge.py]
     Controller <--> Cobaya[Cobaya Controller]
     Cobaya <--> CLASS[CLASS C-Solver + Python Wrapper]
     CLASS <--> Likelihoods[Planck CMB, BAO, Pantheon+ SN]
@@ -156,6 +156,6 @@ For complex models with degenerate parameter spaces, the posterior often contain
 ### 3. 🎲 Instant Pipeline Verification (`--test-toy`)
 For developers and new users, you can run the entire pipeline instantly without compiling CLASS or downloading massive CMB datasets:
 ```bash
-python3 run_optimizer.py --test-toy --multistart 3 --mcmc-steps 100
+python3 run_cosmicforge.py --test-toy --multistart 3 --mcmc-steps 100
 ```
 This runs the multi-start BOBYQA optimizer, clusters the modes, trains the GP active-learning surrogate, runs surrogate-accelerated MCMC, and estimates the combined Gelfand-Dey evidence on a fast 2D toy cosmological likelihood in **less than 2 seconds**. It is the perfect tool for verifying code changes and testing edge cases.

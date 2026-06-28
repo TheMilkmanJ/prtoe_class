@@ -168,7 +168,9 @@ def plot_optimizer_progress(output_prefix, config_path):
                 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 5))
                 names = [m["name"].replace("-preferred", "") for m in valid_modes]
                 chi2s = [m["chi2"] for m in valid_modes]
-                h0s = [m["H0"] for m in valid_modes if m["H0"] is not None]
+                h0_modes = [m for m in valid_modes if m["H0"] is not None]
+                h0_names = [m["name"].replace("-preferred", "") for m in h0_modes]
+                h0s = [m["H0"] for m in h0_modes]
                 
                 # Colors
                 colors = ["#10ac84", "#00d2d3", "#ff9f43", "#5f27cd"][:len(names)]
@@ -183,8 +185,8 @@ def plot_optimizer_progress(output_prefix, config_path):
                     ax1.text(bar.get_x() + bar.get_width()/2, yval + max(1, yval*0.01), f"{yval:.2f}", ha='center', va='bottom', fontsize=9)
                 
                 # Plot 2: H0 Values
-                if len(h0s) == len(modes):
-                    bars2 = ax2.bar(names, h0s, color=colors, alpha=0.8, edgecolor='white', width=0.5)
+                if len(h0_modes) == len(valid_modes):
+                    bars2 = ax2.bar(h0_names, h0s, color=colors[:len(h0_names)], alpha=0.8, edgecolor='white', width=0.5)
                     ax2.set_title("$H_0$ values across modes", fontsize=11, color="#ff9f43")
                     ax2.set_ylabel("$H_0$ [km/s/Mpc]", fontsize=10)
                     ax2.set_ylim(min(h0s) - 2, max(h0s) + 2)
@@ -218,8 +220,6 @@ def plot_optimizer_progress(output_prefix, config_path):
                     if match:
                         try:
                             s_val = match.group(1)
-                            s_val = re.sub(r'\binf\b', '1e10', s_val)
-                            s_val = re.sub(r'\bnan\b', '0.0', s_val)
                             
                             # Read dict
                             d = ast.literal_eval(s_val)
@@ -230,6 +230,10 @@ def plot_optimizer_progress(output_prefix, config_path):
                                 cmb_vals = [d[k] for k in chi2_keys if 'cmb' in k.lower() or 'planck' in k.lower()]
                                 bao_vals = [d[k] for k in chi2_keys if 'bao' in k.lower()]
                                 sn_vals = [d[k] for k in chi2_keys if 'sn' in k.lower() or 'pantheon' in k.lower() or 'shoes' in k.lower()]
+                                
+                                # Skip records with non-finite chi² values
+                                if any(not np.isfinite(v) for v in cmb_vals + bao_vals + sn_vals):
+                                    continue
                                 
                                 cmb_sum = sum(cmb_vals) if cmb_vals else 0.0
                                 bao_sum = sum(bao_vals) if bao_vals else 0.0
@@ -292,7 +296,8 @@ def main(args, first_run=False):
     output_prefix = get_output_prefix_from_yaml(args.config)
     
     if getattr(args, 'optimizer', False):
-        plot_optimizer_progress(output_prefix, args.config)
+        if not plot_optimizer_progress(output_prefix, args.config):
+            sys.exit(1)
         return
 
     if first_run:
@@ -609,7 +614,7 @@ def main(args, first_run=False):
 
         if args.monitor_and_stop and has_warnings:
             # Query backend to check if automated watchdog actions are enabled
-            auto_apply = True
+            auto_apply = False
             try:
                 r = requests.get('http://localhost:8000/api/status', timeout=5)
                 if r.status_code == 200:
@@ -637,16 +642,24 @@ def main(args, first_run=False):
                 update_yaml_priors(proposed_new_bounds, args.config)
                 
                 print("\nTriggering Dashboard Backend to handle clean restart sequence...")
+                restart_handed_off = False
                 try:
                     # Use a short timeout because the backend will kill this script during the stop phase
-                    requests.post('http://localhost:8000/api/watchdog_restart', json={"config_name": args.config}, timeout=2)
+                    resp = requests.post(
+                        'http://localhost:8000/api/watchdog_restart',
+                        json={"config_name": args.config},
+                        timeout=2,
+                    )
+                    resp.raise_for_status()
+                    restart_handed_off = True
                 except requests.exceptions.Timeout:
-                    pass
+                    restart_handed_off = True
                 except Exception as e:
                     print(f"Failed to trigger watchdog restart: {e}")
-                    
-                import sys
-                sys.exit(0) # Exit the script immediately
+                
+                if restart_handed_off:
+                    import sys
+                    sys.exit(0)
             else:
                 warning_msg = (
                     "\n" + "!"*85 + "\n"

@@ -2849,19 +2849,21 @@ int background_derivs(
     double m2 = pba->m_prtoe * pba->m_prtoe;
     double dV_dphi = -pba->lambda_prtoe * pba->V0_prtoe * exp(-pba->lambda_prtoe * phi) + m2 * phi;
 
-    /* Ricci scalar — correct CLASS conformal convention
-       In conformal time: R = 6/a² (H' + H² + K) where H = aH_phys = 𝓗 */
-    pba->R_curvature = 6.0 / (a * a) *
-        (pvecback[pba->index_bg_H_prime] + H * H + pba->K);
+    /* Ricci scalar in FLRW background: R = 6 * (dH/dt + 2*H^2 + K/a^2)
+       where dH/dt = H'/a (H' is conformal time derivative of physical Hubble) */
+    pba->R_curvature = 6.0 * (
+        pvecback[pba->index_bg_H_prime] / a
+        + 2.0 * H * H
+        + pba->K / a2
+    );
 
     /* Klein-Gordon equation in conformal time (background)
-       Variables: dphi = φ' (conformal time derivative), H = 𝓗 (conformal Hubble)
-       Equation: φ'' + 2𝓗φ' + a²V' = (ξ/2)R a²
-       Friction term: 2𝓗φ' (no extra 1/a factor)
-       Source term: (ξ/2)R a² */
+       Variables: dphi = φ' (conformal time derivative), H_conf = a * H (conformal Hubble)
+       Equation: φ'' + 2*H_conf*φ' + a²V' = (ξ/2)R a² */
+    double H_conf = a * H;
     dy[pba->index_bi_phi_prtoe]  = (dphi / a / MAX(H, 1e-20)) * activation;
     dy[pba->index_bi_dphi_prtoe] = (
-      - 2.0 * H * dphi
+      - 2.0 * H_conf * dphi
       - a2 * dV_dphi
       + (xi_screened / 2.0) * pba->R_curvature * a2
     ) / a / MAX(H, 1e-20) * activation;

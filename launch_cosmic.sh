@@ -20,9 +20,10 @@ TUNNEL_LOG="$SCRIPT_DIR/chains/dashboard_tunnel.log"
 PORT=8000
 RESTART_DELAY=5   # seconds to wait before restarting a crashed service
 
-# Set Python path to pgtoe_gold conda environment directly to avoid shell function activation crashes
-# Try to find conda environment dynamically
-if command -v conda &>/dev/null; then
+# Set Python path to pgtoe_gold conda environment directly if available
+if [ -f "/home/themilkmanj/miniconda3/envs/pgtoe_gold/bin/python3" ]; then
+    PYTHON="/home/themilkmanj/miniconda3/envs/pgtoe_gold/bin/python3"
+elif command -v conda &>/dev/null; then
     PYTHON=$(conda run -n pgtoe_gold --no-capture-output python3 2>/dev/null || command -v python3 || command -v python)
 elif [ -n "${CONDA_PREFIX:-}" ]; then
     PYTHON="${CONDA_PREFIX}/bin/python3"
@@ -346,7 +347,7 @@ echo ""
 
 rm -f "$SHUTDOWN_FLAG" "$BACKEND_PID_FILE" 2>/dev/null || true
 
-if wait_for_backend 2>/dev/null; then
+if curl -s --max-time 1 "$BACKEND_URL/api/health" >/dev/null 2>&1 || curl -s --max-time 1 -u "${DASHBOARD_USER:-admin}:${DASHBOARD_PASS}" "$BACKEND_URL/api/status" >/dev/null 2>&1; then
     echo "[Backend] Already running at $BACKEND_URL"
     open_browser
 else

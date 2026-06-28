@@ -1,5 +1,5 @@
 debug: true
-output: chains/prtoe_poly
+output: chains/lcdm_polychord
 likelihood:
   planck_2018_lowl.TT: null
   planck_2018_lowl.EE: null
@@ -12,53 +12,59 @@ likelihood:
   sn.pantheonplusshoes: null
 theory:
   classy:
+    # path: Set via Dashboard Engines panel or specify your CLASS build path here
     stop_at_error: false
     extra_args:
-      use_prtoe: 'yes'
+      use_prtoe: 'no'
       non_linear: halofit
-      output: mPk,tCl,pCl,lCl
+      gauge: newtonian
+      hyper_flat_approximation_nu: 7000.0
+      transfer_neglect_delta_k_S_t0: 0.17
+      transfer_neglect_delta_k_S_t1: 0.05
+      transfer_neglect_delta_k_S_t2: 0.17
+      transfer_neglect_delta_k_S_e: 0.13
+      delta_l_max: 1000
       N_ur: 2.0328
       N_ncdm: 1
       T_ncdm: 0.71611
-    path: /home/themilkmanj/prtoe_class
 params:
   omega_b:
     prior:
-      min: 0.019
-      max: 0.026
+      min: 0.02
+      max: 0.025
     ref: 0.0224
     proposal: 0.0001
     latex: \Omega_\mathrm{b} h^2
   omega_cdm:
     prior:
-      min: 0.1
-      max: 0.2
+      min: 0.11
+      max: 0.13
     ref: 0.12
     proposal: 0.001
     latex: \Omega_\mathrm{c} h^2
   H0:
     prior:
-      min: 55.0
-      max: 85.0
+      min: 62.0
+      max: 80.0
     ref: 67.4
     proposal: 0.5
     latex: H_0
   logA:
     prior:
-      min: 1.61
-      max: 3.91
+      min: 2.9
+      max: 3.25
     ref: 3.05
-    proposal: 0.001
+    proposal: 0.005
     latex: \ln(10^{10} A_\mathrm{s})
     drop: true
   A_s:
     value: 'lambda logA: 1e-10 * np.exp(logA)'
   n_s:
     prior:
-      min: 0.8
-      max: 1.2
+      min: 0.9
+      max: 1.09
     ref: 0.965
-    proposal: 0.005
+    proposal: 0.004
     latex: n_\mathrm{s}
   z_reio:
     prior:
@@ -67,6 +73,13 @@ params:
     ref: 8.0
     proposal: 0.1
     latex: z_\mathrm{reio}
+  m_ncdm:
+    prior:
+      min: 0.0
+      max: 0.5
+    ref: 0.06
+    proposal: 0.02
+    latex: \sum m_\nu \ [\mathrm{eV}]
   A_planck:
     prior:
       dist: norm
@@ -75,55 +88,15 @@ params:
     ref: 1.0
     proposal: 0.00025
     latex: A_\mathrm{planck}
-  xi_prtoe:
-    prior:
-      min: 1.0e-07
-      max: 1.2e-05
-    ref: 1.0e-07
-    proposal: 1.0e-08
-    latex: \xi_\mathrm{prtoe}
-  zeta_prtoe:
-    prior:
-      min: 0.0001
-      max: 5.0
-    ref: 0.1
-    proposal: 0.05
-    latex: \zeta_\mathrm{prtoe}
-  V0_prtoe:
-    value: 'lambda omega_b, omega_cdm, H0: 1.0 - (omega_b + omega_cdm) / (H0/100.0)**2'
-    latex: V_{0,\mathrm{prtoe}}
-  lambda_prtoe:
-    value: 0.05
-    latex: \lambda_\mathrm{prtoe}
-  m_prtoe:
-    value: 0.05
-    latex: m_\mathrm{prtoe}
-  phi_0_prtoe:
-    value: 1.0
-    latex: \phi_{0,\mathrm{prtoe}}
-  m_ncdm:
-    value: 0.06
-    latex: \sum m_\nu \ [\mathrm{eV}]
-  beta_prtoe:
-    value: 1.0e-06
-    latex: \beta_\mathrm{prtoe}
-  M_prtoe:
-    value: 100.0
-    latex: M_\mathrm{prtoe}
-  alpha_prtoe:
-    value: 0.1
-    latex: \alpha_\mathrm{prtoe}
-  M_ew_prtoe:
-    value: 100.0
-    latex: M_{\mathrm{ew},\mathrm{prtoe}}
-  H_vac_floor:
-    value: 64.1218
-    latex: H_{\mathrm{vac,floor}}
-  delta_prtoe:
-    value: 0.0
-    latex: \Delta_\mathrm{prtoe}
+  sigma8:
+    latex: \sigma_8
+  Omega_m:
+    latex: \Omega_\mathrm{m}
+  S8:
+    derived: 'lambda sigma8, Omega_m: sigma8 * (Omega_m / 0.3)**0.5'
+    latex: S_8
 sampler:
   polychord:
     nlive: 200
-    num_repeats: 80
-    precision_criterion: 0.001
+    num_repeats: 5
+    precision_criterion: 0.01
