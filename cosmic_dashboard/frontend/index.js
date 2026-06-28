@@ -1673,6 +1673,8 @@ async function handleYamlUpload(file) {
     if (btnStart) btnStart.disabled = true;
     if (btnStartOpt) btnStartOpt.disabled = true;
     if (btnResume) btnResume.disabled = true;
+    if (btnApplyCosmicForge) btnApplyCosmicForge.disabled = true;
+    if (btnLoadLastRun) btnLoadLastRun.disabled = true;
     
     const formData = new FormData();
     formData.append('file', file);
@@ -1701,6 +1703,8 @@ async function handleYamlUpload(file) {
         if (btnStart) btnStart.disabled = false;
         if (btnStartOpt) btnStartOpt.disabled = false;
         if (btnResume) btnResume.disabled = false;
+        if (btnApplyCosmicForge) btnApplyCosmicForge.disabled = false;
+        if (btnLoadLastRun) btnLoadLastRun.disabled = false;
     }
 }
 
@@ -1856,6 +1860,8 @@ async function triggerRun(forceOverwrite, isOptimizer = false, profileParam = nu
     btnStart.disabled = true;
     if (btnStartOpt) btnStartOpt.disabled = true;
     btnResume.disabled = true;
+    if (btnApplyCosmicForge) btnApplyCosmicForge.disabled = true;
+    if (btnLoadLastRun) btnLoadLastRun.disabled = true;
     const cores = inputCores ? (parseInt(inputCores.value) || 24) : 24;
     
     // Only auto-rebuild if it's checked AND we are starting fresh. We shouldn't rebuild mid-resume.
@@ -1910,12 +1916,16 @@ async function triggerRun(forceOverwrite, isOptimizer = false, profileParam = nu
             btnStart.disabled = false;
             if (btnStartOpt) btnStartOpt.disabled = false;
             btnResume.disabled = false;
+            if (btnApplyCosmicForge) btnApplyCosmicForge.disabled = false;
+            if (btnLoadLastRun) btnLoadLastRun.disabled = false;
         }
     } catch (err) {
         appendLog(`Execution error: ${err.message}`);
         btnStart.disabled = false;
         if (btnStartOpt) btnStartOpt.disabled = false;
         btnResume.disabled = false;
+        if (btnApplyCosmicForge) btnApplyCosmicForge.disabled = false;
+        if (btnLoadLastRun) btnLoadLastRun.disabled = false;
     }
 }
 
@@ -2543,6 +2553,8 @@ async function checkStatus() {
             btnStart.disabled = true;
             if (btnStartOpt) btnStartOpt.disabled = true;
             btnResume.disabled = true;
+            if (btnApplyCosmicForge) btnApplyCosmicForge.disabled = true;
+            if (btnLoadLastRun) btnLoadLastRun.disabled = true;
             btnStop.disabled = false;
             
             let chi2Text = data.best_chi2 !== null ? data.best_chi2.toFixed(4) : 'evaluating';
@@ -2554,6 +2566,8 @@ async function checkStatus() {
                 btnStart.disabled = false;
                 if (btnStartOpt) btnStartOpt.disabled = false;
                 btnResume.disabled = false;
+                if (btnApplyCosmicForge) btnApplyCosmicForge.disabled = false;
+                if (btnLoadLastRun) btnLoadLastRun.disabled = false;
             }
         }
 
