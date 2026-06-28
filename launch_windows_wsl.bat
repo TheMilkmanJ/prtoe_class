@@ -31,8 +31,7 @@ set /p DASHBOARD_USER=Enter DASHBOARD_USER:
 set /p DASHBOARD_PASS=Enter DASHBOARD_PASS:
 
 REM Run the launcher with environment variables inside WSL
-set "WSLENV=LT_SUBDOMAIN:DASHBOARD_USER:DASHBOARD_PASS:%WSLENV%"
-wsl --cd /home/themilkmanj/prtoe_class bash -lc "./launch_cosmic.sh"
+wsl bash -c "export LT_SUBDOMAIN=\"%LT_SUBDOMAIN%\" && export DASHBOARD_USER=\"%DASHBOARD_USER%\" && export DASHBOARD_PASS=\"%DASHBOARD_PASS%\" && cd \"$(wslpath -a '%cd%')\" && chmod +x launch_cosmic.sh && ./launch_cosmic.sh"
 
 echo.
 echo CosmicDashboard has stopped.

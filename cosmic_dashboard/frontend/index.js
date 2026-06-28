@@ -4,6 +4,9 @@ let activeConfig = 'lcdm_config.yaml';
 let lastStatusData = null;
 let baselineBestChi2 = null;
 let baselineLogEvidence = null;
+let lastBaselineUpdateRun = null;
+let lastBaselineUpdateEvidence = null;
+let isUploadingConfig = false;
 
 // Global chart instances
 let chartWMu = null;
@@ -34,8 +37,11 @@ const yamlName = document.getElementById('yaml-name');
 const btnResetYaml = document.getElementById('btn-reset-yaml');
 
 const btnStart = document.getElementById('btn-start');
+const btnStartOpt = document.getElementById('btn-start-opt');
+const btnLoadLastRun = document.getElementById('btn-load-last-run');
 const btnResume = document.getElementById('btn-resume');
 const btnStop = document.getElementById('btn-stop');
+const btnApplyCosmicForge = document.getElementById('btn-apply-cosmicforge');
 const btnDownload = document.getElementById('btn-download');
 
 // Abort confirmation modal elements
@@ -46,6 +52,7 @@ const btnAbortConfirm = document.getElementById('btn-abort-confirm');
 const statDead = document.getElementById('stat-dead');
 const statEvidence = document.getElementById('stat-evidence');
 const statChi2 = document.getElementById('stat-chi2');
+const statChi2File = document.getElementById('stat-chi2-file');
 const statChi2Cmb = document.getElementById('stat-chi2-cmb');
 const statChi2Bao = document.getElementById('stat-chi2-bao');
 const statChi2Sn = document.getElementById('stat-chi2-sn');
@@ -74,6 +81,44 @@ const tensionsCard = document.getElementById('tensions-card');
 const statTensionsBadge = document.getElementById('stat-tensions-badge');
 const statStrugglesBody = document.getElementById('stat-struggles-body');
 
+// Optimizer Monitor Elements
+const optStatEvals = document.getElementById('opt-stat-evals');
+const optStatChi2 = document.getElementById('opt-stat-chi2');
+const optStatChi2File = document.getElementById('opt-stat-chi2-file');
+const optStatChi2Cmb = document.getElementById('opt-stat-chi2-cmb');
+const optStatChi2Bao = document.getElementById('opt-stat-chi2-bao');
+const optStatChi2Sn = document.getElementById('opt-stat-chi2-sn');
+const optStatPhase = document.getElementById('opt-stat-phase');
+const optCpuGaugePath = document.getElementById('opt-cpu-gauge-path');
+const optStatCpu = document.getElementById('opt-stat-cpu');
+const optStatSpeed = document.getElementById('opt-stat-speed');
+const optStatEta = document.getElementById('opt-stat-eta');
+const optProgressPercent = document.getElementById('opt-progress-percent');
+const optProgressFill = document.getElementById('opt-progress-fill');
+
+let monitorTabAutoSwitched = false;
+
+window.switchMonitorTab = function(tabName) {
+    const btnSampler = document.getElementById('btn-monitor-tab-sampler');
+    const btnOptimizer = document.getElementById('btn-monitor-tab-optimizer');
+    const viewSampler = document.getElementById('monitor-view-sampler');
+    const viewOptimizer = document.getElementById('monitor-view-optimizer');
+    
+    if (!btnSampler || !btnOptimizer || !viewSampler || !viewOptimizer) return;
+    
+    if (tabName === 'optimizer') {
+        btnSampler.classList.remove('active');
+        btnOptimizer.classList.add('active');
+        viewSampler.style.display = 'none';
+        viewOptimizer.style.display = 'block';
+    } else {
+        btnSampler.classList.add('active');
+        btnOptimizer.classList.remove('active');
+        viewSampler.style.display = 'block';
+        viewOptimizer.style.display = 'none';
+    }
+};
+
 let localLogs = ['Waiting for run execution...'];
 let lastTerminalLogs = [];
 let plotCheckCounter = 0;
@@ -85,6 +130,8 @@ const plotTimestamp = document.getElementById('plot-timestamp');
 const valBaseline = document.getElementById('val-baseline');
 const valCustom = document.getElementById('val-custom');
 const valDelta = document.getElementById('val-delta');
+const multimodalComparisonCard = document.getElementById('multimodal-comparison-card');
+const multimodalComparisonBody = document.getElementById('multimodal-comparison-body');
 
 const jeffreysCard = document.getElementById('jeffreys-card');
 const jeffreysText = document.getElementById('jeffreys-text');
@@ -97,6 +144,8 @@ const watchdogIcon = document.getElementById('watchdog-icon');
 
 const inputCores = document.getElementById('input-cores');
 const checkAutoRebuild = document.getElementById('check-autorebuild');
+const btnToggleLcdm = document.getElementById('btn-toggle-lcdm');
+const btnTogglePrtoe = document.getElementById('btn-toggle-prtoe');
 const checkAutoRunLcdm = document.getElementById('check-autorun-lcdm');
 const checkAutoRunCustom = document.getElementById('check-autorun-custom');
 
@@ -105,14 +154,73 @@ let isAutoRunning = false; // Flag to track and prevent duplicate auto-run trigg
 let watchdogIgnored = false; // Flag to temporarily ignore watchdog
 let lastRunStartTime = null; // Track run start time to persist ignore state across refreshes
 let lastWatchdogAlertCount = 0; // Track watchdog alert count for audio alerts
+let autoWatchdogEnabled = false;
+
+function updateToggleUI() {
+    const toggle = document.getElementById('toggle-auto-watchdog');
+    if (!toggle) return;
+    const handle = toggle.querySelector('.toggle-handle');
+    if (!handle) return;
+    if (autoWatchdogEnabled) {
+        toggle.style.background = '#10ac84';
+        handle.style.left = '18px';
+    } else {
+        toggle.style.background = 'rgba(255,255,255,0.15)';
+        handle.style.left = '2px';
+    }
+}
 
 // Initial setup
 document.addEventListener('DOMContentLoaded', () => {
-    fetchBaselines();
+    // PERF: Fire checkStatus first so the main UI populates immediately.
+    // Stagger non-critical fetches so they don't compete with first paint.
     checkStatus();
+    setTimeout(() => fetchBaselines(), 300);   // baselines: slight delay, non-critical
+    updateToggleUI();
+
+    const toggleAutoWatchdog = document.getElementById('toggle-auto-watchdog');
+    if (toggleAutoWatchdog) {
+        toggleAutoWatchdog.addEventListener('click', async () => {
+            const previousState = autoWatchdogEnabled;
+            autoWatchdogEnabled = !autoWatchdogEnabled;
+            updateToggleUI();
+            try {
+                const response = await fetch(`${API_URL}/api/settings/watchdog`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ auto_apply: autoWatchdogEnabled })
+                });
+                if (!response.ok) {
+                    throw new Error(`Server returned ${response.status}`);
+                }
+            } catch (err) {
+                console.error("Error updating watchdog settings:", err);
+                appendLog(`[WATCHDOG] Failed to update settings: ${err.message}. Reverting toggle.`);
+                autoWatchdogEnabled = previousState;
+                updateToggleUI();
+            }
+        });
+    }
     // PERFORMANCE FIX: Reduce polling from 3s to 5s to reduce server load and page refresh lag
     // 5 seconds is still very responsive for long-running MCMC chains
     statusInterval = setInterval(checkStatus, 5000);
+
+    // Run Complete Summary Card event listeners
+    const btnCloseSummary = document.getElementById('btn-close-summary');
+    if (btnCloseSummary) {
+        btnCloseSummary.addEventListener('click', () => {
+            const card = document.getElementById('run-complete-summary-card');
+            if (card) card.style.display = 'none';
+        });
+    }
+    const btnViewOptimizerDetails = document.getElementById('btn-view-optimizer-details');
+    if (btnViewOptimizerDetails) {
+        btnViewOptimizerDetails.addEventListener('click', () => {
+            const optTabBtn = document.getElementById('tab-btn-optimizer');
+            if (optTabBtn) optTabBtn.click();
+        });
+    }
 
     // WebSocket for real-time (production improvement, fallback to poll)
     try {
@@ -132,7 +240,17 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch(e) { /* polling fallback */ }
     fetchSysInfo();
     loadClassEngines(true);
-    refreshDerivedParameters();  // initial attempt (will show placeholder until data)
+    // PERF: refreshDerivedParameters is slow on first load when no data exists.
+    // Defer 800ms so it doesn't block initial paint.
+    setTimeout(() => refreshDerivedParameters(), 800);
+
+    // PERF: Lazy-load the nebula background image after first paint is done.
+    // This avoids the Unsplash image blocking LCP (Largest Contentful Paint).
+    requestIdleCallback(() => {
+        document.body.style.backgroundImage =
+            "linear-gradient(to bottom, rgba(3,0,8,0.4), rgba(3,0,8,0.9)), " +
+            "url('https://images.unsplash.com/photo-1462331940025-496dfbfc7564?q=80&w=2560&auto=format&fit=crop')";
+    }, { timeout: 1000 });
 
     // Wire Manage Engines button (prompt UI for adding/selecting engines)
     const manageBtn = document.getElementById('btn-manage-engines');
@@ -223,8 +341,17 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // Initialize blank charts
-    initCharts();
+    // PERF: Defer chart initialization until after first paint and Chart.js is confirmed loaded.
+    // initCharts() creates 13 Chart.js instances — doing it synchronously blocks the main thread.
+    const _initChartsWhenReady = () => {
+        if (typeof Chart !== 'undefined') {
+            initCharts();
+        } else {
+            // Chart.js (deferred) not yet parsed — retry in 100ms
+            setTimeout(_initChartsWhenReady, 100);
+        }
+    };
+    setTimeout(_initChartsWhenReady, 200); // yield to browser paint first
 
     // Rebuild CLASS Wizard Compile Button
     const btnWizardCompile = document.getElementById('btn-wizard-compile');
@@ -273,7 +400,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (btnLogout) {
         btnLogout.addEventListener('click', async () => {
             try {
-                await fetch(`${API_URL}/api/logout`, { method: 'POST' });
+                await fetch(`${API_URL}/api/logout`, { method: 'POST', credentials: 'include' });
             } catch(e) {}
             location.reload();
         });
@@ -317,6 +444,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const pasted = prompt('Paste a working phone tunnel URL (e.g. https://abc123.loca.lt) or leave empty to cancel.\n\nUse this for manual "npx localtunnel --port 8000" or if the auto link broke.', current || '');
             if (pasted === null) return; // cancel
             const urlVal = pasted.trim();
+            // Validate URL is HTTP(S) before storing
+            if (urlVal && !urlVal.match(/^https?:\/\//i)) {
+                alert('Invalid URL: must start with http:// or https://');
+                return;
+            }
             try {
                 const resp = await fetch(`${API_URL}/api/set_tunnel_url`, {
                     method: 'POST',
@@ -367,6 +499,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const pasted = prompt('Paste a working phone tunnel URL (e.g. https://abc123.loca.lt) — this activates the Phone Sync link for remote/phone access.\n\nUseful if the launcher phone link "broke", tunnel expired, or you ran npx localtunnel manually in another terminal.', current || '');
             if (pasted === null) return;
             const urlVal = pasted.trim();
+            // Validate URL is HTTP(S) before storing
+            if (urlVal && !urlVal.match(/^https?:\/\//i)) {
+                alert('Invalid URL: must start with http:// or https://');
+                return;
+            }
             try {
                 const resp = await fetch(`${API_URL}/api/set_tunnel_url`, {
                     method: 'POST',
@@ -771,6 +908,26 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Quick toggle buttons for LCDM and PRTOE
+    if (btnToggleLcdm) {
+        btnToggleLcdm.addEventListener('click', () => {
+            const selectEl = document.getElementById('select-config-template');
+            if (selectEl) {
+                selectEl.value = 'lcdm_baseline';
+                btnLoadTemplate.click();
+            }
+        });
+    }
+    if (btnTogglePrtoe) {
+        btnTogglePrtoe.addEventListener('click', () => {
+            const selectEl = document.getElementById('select-config-template');
+            if (selectEl) {
+                selectEl.value = 'prtoe_standard';
+                btnLoadTemplate.click();
+            }
+        });
+    }
+
     const btnSaveTemplate = document.getElementById('btn-save-template');
     if (btnSaveTemplate) {
         btnSaveTemplate.addEventListener('click', async () => {
@@ -893,6 +1050,276 @@ async function fetchSysInfo() {
     }
 }
 
+async function fetchMultimodalComparison() {
+    if (!multimodalComparisonCard || !multimodalComparisonBody) return;
+    try {
+        const response = await fetch(`${API_URL}/api/multimodal_comparison`, { credentials: 'include' });
+        if (!response.ok) {
+            multimodalComparisonCard.style.display = 'none';
+            return;
+        }
+        const data = await response.json();
+        if (data.status === 'success' && data.modes && data.modes.length > 0) {
+            multimodalComparisonCard.style.display = 'block';
+            
+            // Update the Run Complete Summary Card values
+            const summaryCombinedLogZ = document.getElementById('summary-combined-logz');
+            const summaryModesCount = document.getElementById('summary-modes-count');
+            const summaryExplorationHealth = document.getElementById('summary-exploration-health');
+            
+            if (summaryCombinedLogZ) {
+                summaryCombinedLogZ.textContent = data.combined_logz !== undefined && data.combined_logz !== null ? data.combined_logz.toFixed(4) : '-';
+            }
+            if (summaryModesCount) {
+                summaryModesCount.textContent = data.modes.length;
+            }
+            if (summaryExplorationHealth) {
+                summaryExplorationHealth.textContent = data.exploration_health || '100.0%';
+            }
+            
+            // Show the card if the current run is completed and it's an optimizer run
+            const runCompleteCard = document.getElementById('run-complete-summary-card');
+            if (runCompleteCard && lastStatusData && lastStatusData.status === 'completed' && lastStatusData.is_optimizer) {
+                runCompleteCard.style.display = 'block';
+            }
+            
+            // Build the table html
+            let html = `
+                <table style="width: 100%; border-collapse: collapse; margin-top: 8px; text-align: left; font-size: 0.76rem; border: 1px solid rgba(255,255,255,0.05); background: rgba(0,0,0,0.15);">
+                    <thead>
+                        <tr style="border-bottom: 2px solid rgba(255,255,255,0.1); background: rgba(0, 210, 211, 0.1); color: #00d2d3;">
+                            <th style="padding: 8px 6px; font-weight: bold; border-right: 1px solid rgba(255,255,255,0.05);">Parameter / Metric</th>
+            `;
+            
+            // Mode headers
+            data.modes.forEach(mode => {
+                html += `<th style="padding: 8px 6px; font-weight: bold; text-align: center; border-right: 1px solid rgba(255,255,255,0.05);">${escHtml(mode.name)}</th>`;
+            });
+            html += `</tr></thead><tbody>`;
+            
+            // Row for Total Chi2
+            html += `<tr style="border-bottom: 1px solid rgba(255,255,255,0.05); background: rgba(255, 159, 67, 0.05);">
+                        <td style="padding: 6px; font-weight: bold; border-right: 1px solid rgba(255,255,255,0.05); color: #ff9f43;">Total &chi;&sup2; (Raw)</td>`;
+            data.modes.forEach(mode => {
+                html += `<td style="padding: 6px; text-align: center; border-right: 1px solid rgba(255,255,255,0.05); font-weight: bold; color: #ff9f43;">${mode.chi2 !== null ? mode.chi2.toFixed(4) : '-'}</td>`;
+            });
+            html += `</tr>`;
+
+            // Row for Viability
+            let hasViability = data.modes.some(mode => mode.viability_score !== undefined);
+            if (hasViability) {
+                html += `<tr style="border-bottom: 1px solid rgba(255,255,255,0.05); background: rgba(16, 172, 132, 0.05);">
+                            <td style="padding: 6px; font-weight: bold; border-right: 1px solid rgba(255,255,255,0.05); color: #10ac84;">Physical Viability</td>`;
+                data.modes.forEach(mode => {
+                    const score = mode.viability_score;
+                    let color = "#10ac84";
+                    if (score && parseFloat(score) < 95.0) color = "#ee5253";
+                    html += `<td style="padding: 6px; text-align: center; border-right: 1px solid rgba(255,255,255,0.05); font-weight: bold; color: ${color};">${score ? escHtml(String(score)) : '-'}</td>`;
+                });
+                html += `</tr>`;
+            }
+
+            // Row for Penalized Chi2
+            let hasPenalized = data.modes.some(mode => mode.penalized_chi2 !== undefined);
+            if (hasPenalized) {
+                html += `<tr style="border-bottom: 1px solid rgba(255,255,255,0.05); background: rgba(95, 39, 205, 0.05);">
+                            <td style="padding: 6px; font-weight: bold; border-right: 1px solid rgba(255,255,255,0.05); color: #5f27cd;">Penalized &chi;&sup2;</td>`;
+                data.modes.forEach(mode => {
+                    const pen = mode.penalized_chi2;
+                    html += `<td style="padding: 6px; text-align: center; border-right: 1px solid rgba(255,255,255,0.05); font-weight: bold; color: #5f27cd;">${pen !== undefined && pen !== null ? pen.toFixed(4) : '-'}</td>`;
+                });
+                html += `</tr>`;
+            }
+
+            // Row for Mode Stability
+            let hasStability = data.modes.some(mode => mode.stability !== undefined && mode.stability !== null);
+            if (hasStability) {
+                html += `<tr style="border-bottom: 1px solid rgba(255,255,255,0.05); background: rgba(0, 210, 211, 0.05);">
+                            <td style="padding: 6px; font-weight: bold; border-right: 1px solid rgba(255,255,255,0.05); color: #00d2d3;">Mode Stability (Basin)</td>`;
+                data.modes.forEach(mode => {
+                    const stab = mode.stability;
+                    html += `<td style="padding: 6px; text-align: center; border-right: 1px solid rgba(255,255,255,0.05); font-weight: bold; color: #00d2d3;">${stab ? escHtml(String(stab)) : '-'}</td>`;
+                });
+                html += `</tr>`;
+            }
+
+            // Row for Isolation Index
+            let hasIsolation = data.modes.some(mode => mode.isolation !== undefined && mode.isolation !== null);
+            if (hasIsolation) {
+                html += `<tr style="border-bottom: 1px solid rgba(255,255,255,0.05); background: rgba(241, 196, 15, 0.05);">
+                            <td style="padding: 6px; font-weight: bold; border-right: 1px solid rgba(255,255,255,0.05); color: #f1c40f;">Isolation Index</td>`;
+                data.modes.forEach(mode => {
+                    const isol = mode.isolation;
+                    html += `<td style="padding: 6px; text-align: center; border-right: 1px solid rgba(255,255,255,0.05); font-weight: bold; color: #f1c40f;">${isol ? (parseFloat(isol) < 0 ? escHtml('N/A (Single Mode)') : escHtml(parseFloat(isol).toFixed(3))) : '-'}</td>`;
+                });
+                html += `</tr>`;
+            }
+
+            // Row for Mode Evidence
+            let hasModeEvidence = data.modes.some(mode => mode.log_z !== undefined && mode.log_z !== null);
+            if (hasModeEvidence) {
+                html += `<tr style="border-bottom: 1px solid rgba(255,255,255,0.05); background: rgba(155, 89, 182, 0.05);">
+                            <td style="padding: 6px; font-weight: bold; border-right: 1px solid rgba(255,255,255,0.05); color: #9b59b6;">Mode Evidence ln(Z)</td>`;
+                data.modes.forEach(mode => {
+                    const lz = mode.log_z;
+                    html += `<td style="padding: 6px; text-align: center; border-right: 1px solid rgba(255,255,255,0.05); font-weight: bold; color: #9b59b6;">${lz ? escHtml(String(lz)) : '-'}</td>`;
+                });
+                html += `</tr>`;
+            }
+
+            // Row for MCMC Acceptance Rate
+            let hasMcmcAcc = data.modes.some(mode => mode.acc_rate !== undefined && mode.acc_rate !== null);
+            if (hasMcmcAcc) {
+                html += `<tr style="border-bottom: 1px solid rgba(255,255,255,0.05); background: rgba(52, 152, 219, 0.05);">
+                            <td style="padding: 6px; font-weight: bold; border-right: 1px solid rgba(255,255,255,0.05); color: #3498db;">MCMC Acc. Rate</td>`;
+                data.modes.forEach(mode => {
+                    const acc = mode.acc_rate;
+                    html += `<td style="padding: 6px; text-align: center; border-right: 1px solid rgba(255,255,255,0.05); font-weight: bold; color: #3498db;">${acc ? escHtml(String(acc)) : '-'}</td>`;
+                });
+                html += `</tr>`;
+            }
+            
+            // Rows for parameters
+            const allParams = new Set();
+            data.modes.forEach(mode => {
+                Object.keys(mode.params).forEach(k => allParams.add(k));
+            });
+            const sortedParams = Array.from(allParams).sort();
+            
+            sortedParams.forEach(param => {
+                html += `<tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                            <td style="padding: 6px; border-right: 1px solid rgba(255,255,255,0.05); color: #a4b0be;">${escHtml(param)}</td>`;
+                data.modes.forEach(mode => {
+                    const val = mode.params[param];
+                    html += `<td style="padding: 6px; text-align: center; border-right: 1px solid rgba(255,255,255,0.05); font-family: var(--font-mono);">${val ? escHtml(String(val)) : '-'}</td>`;
+                });
+                html += `</tr>`;
+            });
+            
+            // Rows for Derived Metrics
+            const allMetrics = new Set();
+            data.modes.forEach(mode => {
+                Object.keys(mode.metrics).forEach(k => allMetrics.add(k));
+            });
+            const sortedMetrics = Array.from(allMetrics).sort();
+            
+            sortedMetrics.forEach(metric => {
+                html += `<tr style="border-bottom: 1px solid rgba(255,255,255,0.05); background: rgba(0, 210, 211, 0.02);">
+                            <td style="padding: 6px; border-right: 1px solid rgba(255,255,255,0.05); color: #00d2d3; font-weight: bold;">${escHtml(metric)}</td>`;
+                data.modes.forEach(mode => {
+                    const val = mode.metrics[metric];
+                    let cellStyle = "";
+                    if (val && val.includes("PHYSICALLY VIABLE")) {
+                        cellStyle = "color: #10ac84; font-weight: bold;";
+                    } else if (val && val.includes("UNPHYSICAL")) {
+                        cellStyle = "color: #ee5a24; font-weight: bold;";
+                    }
+                    html += `<td style="padding: 6px; text-align: center; border-right: 1px solid rgba(255,255,255,0.05); ${cellStyle}">${escHtml(val || '-')}</td>`;
+                });
+                html += `</tr>`;
+            });
+            
+            // Rows for Likelihoods
+            const allLikes = new Set();
+            data.modes.forEach(mode => {
+                Object.keys(mode.likes).forEach(k => allLikes.add(k));
+            });
+            const sortedLikes = Array.from(allLikes).sort();
+            
+            sortedLikes.forEach(like => {
+                html += `<tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                            <td style="padding: 6px; border-right: 1px solid rgba(255,255,255,0.05); color: #84817a; font-size: 0.72rem;">&chi;&sup2; (${escHtml(like.replace('chi2__', ''))})</td>`;
+                data.modes.forEach(mode => {
+                    const val = mode.likes[like];
+                    html += `<td style="padding: 6px; text-align: center; border-right: 1px solid rgba(255,255,255,0.05); font-size: 0.72rem; color: #a4b0be;">${val ? parseFloat(val).toFixed(3) : '-'}</td>`;
+                });
+                html += `</tr>`;
+            });
+            
+            html += `</tbody></table>`;
+            
+            let summaryHtml = "";
+            if (data.combined_logz !== undefined && data.combined_logz !== null) {
+                summaryHtml += `
+                    <div style="display: flex; gap: 16px; margin-bottom: 12px; font-size: 0.8rem; background: rgba(255,255,255,0.02); padding: 8px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.05);">
+                        <div><span style="color: #9b59b6; font-weight: bold;">Combined Multimodal Evidence ln(Z):</span> <span style="font-family: var(--font-mono); font-weight: bold; color: white;">${data.combined_logz.toFixed(4)}</span></div>
+                        ${data.exploration_health ? `<div><span style="color: #10ac84; font-weight: bold;">Exploration Health:</span> <span style="font-weight: bold; color: white;">${escHtml(data.exploration_health)}</span></div>` : ''}
+                    </div>
+                `;
+            }
+            multimodalComparisonBody.innerHTML = summaryHtml + html;
+
+            // Render Tension Analysis if present
+            const tensionCard = document.getElementById('tension-analysis-card');
+            const tensionBody = document.getElementById('tension-analysis-body');
+            if (tensionCard && tensionBody) {
+                if (data.tensions && data.tensions.length > 0) {
+                    tensionCard.style.display = 'block';
+                    let tHtml = `
+                        <table style="width: 100%; border-collapse: collapse; margin-top: 8px; text-align: left; font-size: 0.76rem; border: 1px solid rgba(255,255,255,0.05); background: rgba(0,0,0,0.15);">
+                            <thead>
+                                <tr style="border-bottom: 2px solid rgba(255,255,255,0.1); background: rgba(238, 82, 83, 0.1); color: #ee5253;">
+                                    <th style="padding: 8px 6px; font-weight: bold; border-right: 1px solid rgba(255,255,255,0.05);">Modes Compared</th>
+                                    <th style="padding: 8px 6px; font-weight: bold; border-right: 1px solid rgba(255,255,255,0.05);">Parameter</th>
+                                    <th style="padding: 8px 6px; font-weight: bold; text-align: center;">Tension (&sigma;)</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                    `;
+                    data.tensions.forEach(t => {
+                        let badgeColor = "#10ac84";
+                        if (t.value >= 3.0) badgeColor = "#ee5253";
+                        else if (t.value >= 2.0) badgeColor = "#ff9f43";
+                        
+                        tHtml += `
+                            <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                                <td style="padding: 6px; border-right: 1px solid rgba(255,255,255,0.05); color: #a4b0be;">${escHtml(t.mode1)} vs ${escHtml(t.mode2)}</td>
+                                <td style="padding: 6px; border-right: 1px solid rgba(255,255,255,0.05); color: #00d2d3; font-weight: bold;">${escHtml(t.param)}</td>
+                                <td style="padding: 6px; text-align: center; font-weight: bold; color: ${badgeColor};">${t.value.toFixed(2)} &sigma;</td>
+                            </tr>
+                        `;
+                    });
+                    tHtml += `</tbody></table>`;
+                    tensionBody.innerHTML = tHtml;
+                } else {
+                    tensionCard.style.display = 'none';
+                }
+            }
+
+            // Render Profile Likelihood Scan if present
+            const profileCard = document.getElementById('profile-likelihood-card');
+            const profilePlot = document.getElementById('profile-likelihood-plot');
+            if (profileCard && profilePlot) {
+                const imgUrl = `${API_URL}/profile_likelihood.png?` + new Date().getTime();
+                const img = new Image();
+                img.onload = function() {
+                    profilePlot.src = imgUrl;
+                    profilePlot.style.display = 'block';
+                    profileCard.style.display = 'block';
+                };
+                img.onerror = function() {
+                    profileCard.style.display = 'none';
+                };
+                img.src = imgUrl;
+            }
+        } else {
+            multimodalComparisonCard.style.display = 'none';
+            const tensionCard = document.getElementById('tension-analysis-card');
+            if (tensionCard) tensionCard.style.display = 'none';
+            const profileCard = document.getElementById('profile-likelihood-card');
+            if (profileCard) profileCard.style.display = 'none';
+        }
+    } catch (err) {
+        console.error("Error fetching multimodal comparison:", err);
+        multimodalComparisonCard.style.display = 'none';
+        const tensionCard = document.getElementById('tension-analysis-card');
+        if (tensionCard) tensionCard.style.display = 'none';
+        const profileCard = document.getElementById('profile-likelihood-card');
+        if (profileCard) profileCard.style.display = 'none';
+    }
+}
+
+
 async function refreshDerivedParameters() {
     const body = document.getElementById('derived-params-body');
     if (!body) return;
@@ -924,10 +1351,10 @@ async function refreshDerivedParameters() {
             if (k === 'computed_at' || k === 'engine' || k === 'error') return;
             const label = nice[k] || k;
             const val = typeof d[k] === 'number' ? d[k].toFixed(5) : d[k];
-            html += `<div><span style="color:#a4b0be">${label}:</span> <span style="color:#fff;font-weight:600">${val}</span></div>`;
+            html += `<div><span style="color:#a4b0be">${escHtml(String(label))}:</span> <span style="color:#fff;font-weight:600">${escHtml(String(val))}</span></div>`;
         });
         if (d.engine) {
-            html += `<div style="grid-column:1/-1; font-size:0.68rem; color:#666; margin-top:4px;">Computed with: ${d.engine}</div>`;
+            html += `<div style="grid-column:1/-1; font-size:0.68rem; color:#666; margin-top:4px;">Computed with: ${escHtml(d.engine)}</div>`;
         }
         body.innerHTML = html || '<div style="color:#a4b0be">No standard deriveds available for this model</div>';
     } catch (e) {
@@ -1015,16 +1442,37 @@ async function buildGeneralPlaygroundSliders() {
         }
         params.forEach(p => {
             const div = document.createElement('div');
-            div.innerHTML = `
-                <div style="display:flex; justify-content:space-between; color:#fff; margin-bottom:2px; font-size:0.75rem;">
-                    <span>${p.latex || p.name}:</span>
-                    <span id="val-gen-${p.name}" style="font-family:var(--font-mono);color:#00d2d3;">${p.ref.toFixed(4)}</span>
-                </div>
-                <input type="range" class="play-slider gen-slider" data-param="${p.name}" min="${p.min}" max="${p.max}" step="${(p.max-p.min)/100}" value="${p.ref}" style="width:100%; height:5px; accent-color:#00d2d3; background:rgba(255,255,255,0.1); border-radius:3px;">
-            `;
-            container.appendChild(div);
-            const slider = div.querySelector('.gen-slider');
-            const valSpan = div.querySelector(`#val-gen-${p.name}`);
+            const nameSpan = document.createElement('span');
+            nameSpan.textContent = p.latex || p.name;
+            const valSpan = document.createElement('span');
+            valSpan.id = `val-gen-${p.name}`;
+            valSpan.style.fontFamily = 'var(--font-mono)';
+            valSpan.style.color = '#00d2d3';
+            valSpan.textContent = p.ref.toFixed(4);
+            
+            const headerDiv = document.createElement('div');
+            headerDiv.style.display = 'flex';
+            headerDiv.style.justifyContent = 'space-between';
+            headerDiv.style.color = '#fff';
+            headerDiv.style.marginBottom = '2px';
+            headerDiv.style.fontSize = '0.75rem';
+            headerDiv.appendChild(nameSpan);
+            headerDiv.appendChild(valSpan);
+            
+            const slider = document.createElement('input');
+            slider.type = 'range';
+            slider.className = 'play-slider gen-slider';
+            slider.dataset.param = p.name;
+            slider.min = p.min;
+            slider.max = p.max;
+            slider.step = (p.max - p.min) / 100;
+            slider.value = p.ref;
+            slider.style.width = '100%';
+            slider.style.height = '5px';
+            slider.style.accentColor = '#00d2d3';
+            slider.style.background = 'rgba(255,255,255,0.1)';
+            slider.style.borderRadius = '3px';
+            
             slider.addEventListener('input', () => {
                 valSpan.textContent = parseFloat(slider.value).toFixed(4);
                 // debounce update
@@ -1033,6 +1481,10 @@ async function buildGeneralPlaygroundSliders() {
                     updateGeneralPlayground();
                 }, 200);
             });
+            
+            div.appendChild(headerDiv);
+            div.appendChild(slider);
+            container.appendChild(div);
         });
         // initial draw
         updateGeneralPlayground();
@@ -1173,6 +1625,13 @@ function setupUploadZone(zone, input, handler) {
         input.value = ''; // Reset value to force 'change' event even for the same file
         input.click();
     });
+    zone.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            input.value = '';
+            input.click();
+        }
+    });
     zone.addEventListener('dragover', (e) => {
         e.preventDefault();
         zone.classList.add('active');
@@ -1195,6 +1654,7 @@ function setupUploadZone(zone, input, handler) {
 
 // YAML Configuration upload
 async function handleYamlUpload(file) {
+    isUploadingConfig = true;
     // Optimistically set the active config and UI immediately on selection.
     // Upload will copy content to uploaded_config.yaml on server.
     // This prevents starting with stale activeConfig (e.g. default lcdm) if user starts run
@@ -1211,6 +1671,7 @@ async function handleYamlUpload(file) {
     
     // Temporarily disable start/resume during upload to avoid race with activeConfig.
     if (btnStart) btnStart.disabled = true;
+    if (btnStartOpt) btnStartOpt.disabled = true;
     if (btnResume) btnResume.disabled = true;
     
     const formData = new FormData();
@@ -1235,8 +1696,10 @@ async function handleYamlUpload(file) {
         appendLog(`Upload error: ${err.message}`);
         switchToLcdm();
     } finally {
+        isUploadingConfig = false;
         // Re-enable buttons (status check will manage based on run state)
         if (btnStart) btnStart.disabled = false;
+        if (btnStartOpt) btnStartOpt.disabled = false;
         if (btnResume) btnResume.disabled = false;
     }
 }
@@ -1251,11 +1714,147 @@ btnStart.addEventListener('click', () => {
         () => triggerRun(true)
     );
 });
+if (btnStartOpt) {
+    btnStartOpt.addEventListener('click', () => {
+        showConfirmationModal(
+            "Start CosmicForge",
+            "Are you sure you want to start a fast cosmological optimization run using BOBYQA? This will terminate any active run and launch the new optimizer.",
+            "Yes, Start CosmicForge",
+            "Cancel",
+            () => triggerRun(true, true)
+        );
+    });
+}
+const btnStartProfile = document.getElementById('btn-start-profile');
+if (btnStartProfile) {
+    btnStartProfile.addEventListener('click', () => {
+        const param = document.getElementById('profile-param').value;
+        const minVal = parseFloat(document.getElementById('profile-min').value);
+        const maxVal = parseFloat(document.getElementById('profile-max').value);
+        const steps = parseInt(document.getElementById('profile-steps').value) || 8;
+        
+        let range = null;
+        if (!isNaN(minVal) && !isNaN(maxVal)) {
+            range = [minVal, maxVal];
+        }
+        
+        showConfirmationModal(
+            "Start Profile Likelihood Scan",
+            `Are you sure you want to start a Profile Likelihood Scan for parameter ${param}? This will fix ${param} at ${steps} points and optimize all other parameters at each step.`,
+            "Yes, Start Scan",
+            "Cancel",
+            () => triggerRun(true, true, param, range, steps)
+        );
+    });
+}
 btnResume.addEventListener('click', () => triggerRun(false));
 
-async function triggerRun(forceOverwrite) {
+// Apply CosmicForge toggle - smart config mapping
+if (btnApplyCosmicForge) {
+    btnApplyCosmicForge.addEventListener('click', async () => {
+        const configSelect = document.getElementById('select-config-template');
+        if (!configSelect) {
+            appendLog('[CosmicForge] Error: Config selector not found');
+            return;
+        }
+        
+        const selectedValue = configSelect.value;
+        let cosmicForgeConfig = null;
+        
+        // Smart mapping: map selected config to CosmicForge version
+        switch(selectedValue) {
+            case 'prtoe_standard':
+                cosmicForgeConfig = 'cosmic_dashboard/scripts/prtoe_standard_cosmicforge.yaml';
+                break;
+            case 'lcdm_baseline':
+            case 'lcdm_config':
+                cosmicForgeConfig = 'cosmic_dashboard/scripts/lcdm_config_cosmicforge.yaml';
+                break;
+            default:
+                appendLog('[CosmicForge] Please select a valid preset config first (PRTOE Standard or ΛCDM Baseline)');
+                return;
+        }
+        
+        try {
+            appendLog(`[CosmicForge] Applying CosmicForge settings for ${selectedValue}...`);
+            
+            const response = await fetch(`${API_URL}/api/templates/load`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    name: 'custom',
+                    yaml_content: cosmicForgeConfig
+                })
+            });
+            
+            if (!response.ok) {
+                throw new Error(`Failed to load: ${response.status}`);
+            }
+            
+            const result = await response.json();
+            appendLog(`✅ ${result.message}`);
+            appendLog(`[CosmicForge] Ready to start with CosmicForge-optimized ${selectedValue} config`);
+            
+            // Update active config display
+            activeConfig = cosmicForgeConfig;
+            if (yamlName) {
+                yamlName.textContent = `Active Config: ${cosmicForgeConfig}`;
+            }
+            
+            // Refresh config display
+            setTimeout(fetchConfigFile, 500);
+            
+        } catch (error) {
+            appendLog(`[CosmicForge] Error: ${error.message}`);
+        }
+    });
+}
+
+// Load Last Run Configuration
+if (btnLoadLastRun) {
+    btnLoadLastRun.addEventListener('click', async () => {
+        try {
+            btnLoadLastRun.disabled = true;
+            btnLoadLastRun.innerHTML = '⏳ Loading...';
+            
+            const response = await fetch(`${API_URL}/api/templates/load`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: 'last_run' })
+            });
+            
+            if (!response.ok) {
+                throw new Error(`Failed to load last run: ${response.status}`);
+            }
+            
+            const result = await response.json();
+            appendLog(`✅ ${result.message}`);
+            appendLog('📝 Loaded configuration: last_run.yaml - Ready to start run with same settings');
+            
+            // Refresh config display
+            setTimeout(fetchConfigFile, 500);
+            
+            btnLoadLastRun.innerHTML = '📱 Replay Last Run';
+            btnLoadLastRun.disabled = false;
+        } catch (error) {
+            console.error('Error loading last run:', error);
+            appendLog(`❌ Failed to load last run: ${error.message}`);
+            btnLoadLastRun.innerHTML = '📱 Replay Last Run';
+            btnLoadLastRun.disabled = false;
+        }
+    });
+}
+
+async function triggerRun(forceOverwrite, isOptimizer = false, profileParam = null, profileRange = null, profileSteps = 8) {
+    // Authoritative upload gating: prevent run if config uploadis in progress
+    if (isUploadingConfig) {
+        appendLog('[PIPELINE] Cannot start run: configuration upload is in progress. Please wait for upload to complete.');
+        return;
+    }
+    
     isAutoRunning = false;
     btnStart.disabled = true;
+    if (btnStartOpt) btnStartOpt.disabled = true;
     btnResume.disabled = true;
     const cores = inputCores ? (parseInt(inputCores.value) || 24) : 24;
     
@@ -1272,7 +1871,15 @@ async function triggerRun(forceOverwrite) {
     const configForLog = (yamlName && yamlName.textContent && yamlName.textContent.includes('.')) 
         ? yamlName.textContent 
         : activeConfig;
-    appendLog(`Starting PolyChord nested sampling on ${cores} cores with config: ${configForLog} (active slot: ${activeConfig})...`);
+    if (isOptimizer) {
+        if (profileParam) {
+            appendLog(`Starting Profile Scan for ${profileParam} on ${cores} cores with config: ${configForLog}...`);
+        } else {
+            appendLog(`Starting Cosmo Optimizer on ${cores} cores with config: ${configForLog} (active slot: ${activeConfig})...`);
+        }
+    } else {
+        appendLog(`Starting PolyChord nested sampling on ${cores} cores with config: ${configForLog} (active slot: ${activeConfig})...`);
+    }
     
     try {
         const response = await fetch(`${API_URL}/api/start_run`, {
@@ -1282,7 +1889,14 @@ async function triggerRun(forceOverwrite) {
                 config_name: activeConfig,
                 cores: cores,
                 auto_rebuild: autoRebuild,
-                force_overwrite: forceOverwrite
+                force_overwrite: forceOverwrite,
+                is_optimizer: isOptimizer,
+                optimizer_method: "bobyqa",
+                optimizer_multistart: isOptimizer && !profileParam ? 4 : 1,
+                optimizer_mcmc_steps: isOptimizer && !profileParam ? 100 : 0,
+                profile_param: profileParam,
+                profile_range: profileRange,
+                profile_steps: profileSteps
             })
         });
         const data = await response.json();
@@ -1294,57 +1908,69 @@ async function triggerRun(forceOverwrite) {
         } else {
             appendLog(`Failed to start: ${data.detail}`);
             btnStart.disabled = false;
+            if (btnStartOpt) btnStartOpt.disabled = false;
             btnResume.disabled = false;
         }
     } catch (err) {
         appendLog(`Execution error: ${err.message}`);
         btnStart.disabled = false;
+        if (btnStartOpt) btnStartOpt.disabled = false;
         btnResume.disabled = false;
     }
 }
 
 // Stop Run event listeners
-btnStop.addEventListener('click', () => {
-    abortModal.classList.add('active');
-});
+if (btnStop && abortModal) {
+    btnStop.addEventListener('click', () => {
+        abortModal.classList.add('active');
+    });
 
-btnAbortCancel.addEventListener('click', () => {
-    abortModal.classList.remove('active');
-});
-
-// Close modal when clicking the overlay backdrop itself
-abortModal.addEventListener('click', (e) => {
-    if (e.target === abortModal) {
+    btnAbortCancel.addEventListener('click', () => {
         abortModal.classList.remove('active');
-    }
-});
+    });
 
-btnAbortConfirm.addEventListener('click', async () => {
-    abortModal.classList.remove('active');
-    btnStop.disabled = true;
-    appendLog('Sending termination signal to sampler process group...');
-    
-    try {
-        const response = await fetch(`${API_URL}/api/stop_run`, {
-            method: 'POST'
-        });
-        const data = await response.json();
-        if (response.ok) {
-            appendLog('Abort signal sent. For mpirun/Cobaya runs the process tree may take a few seconds to fully die (MPI ranks, workers). Dashboard state updated immediately; status will reflect "stopped" shortly.');
-            // Force local button disabled + optimistic status
-            btnStop.disabled = true;
-            // Poll a couple times quickly
-            setTimeout(checkStatus, 800);
-            setTimeout(checkStatus, 2500);
-        } else {
-            appendLog(`Failed to stop process: ${data.detail}`);
+    // Close modal when clicking the overlay backdrop itself
+    abortModal.addEventListener('click', (e) => {
+        if (e.target === abortModal) {
+            abortModal.classList.remove('active');
+        }
+    });
+
+    btnAbortConfirm.addEventListener('click', async () => {
+        abortModal.classList.remove('active');
+        btnStop.disabled = true;
+        const isOptimizerRun = (lastStatusData && lastStatusData.is_optimizer);
+        appendLog(isOptimizerRun ? 'Sending termination signal to CosmicForge process tree...' : 'Sending termination signal to sampler process group...');
+        
+        try {
+            const response = await fetch(`${API_URL}/api/stop_run`, {
+                method: 'POST'
+            });
+            const data = await response.json();
+            if (response.ok) {
+                const message = isOptimizerRun 
+                    ? 'Abort signal sent to CosmicForge. Multiple Cobaya sub-processes may take several seconds to terminate. Dashboard will update when complete.'
+                    : 'Abort signal sent. For mpirun/Cobaya runs the process tree may take a few seconds to fully die (MPI ranks, workers). Dashboard state updated immediately; status will reflect "stopped" shortly.';
+                appendLog(message);
+                // Force local button disabled + optimistic status
+                btnStop.disabled = true;
+                // Poll a couple times quickly, then more for CosmicForge
+                setTimeout(checkStatus, 800);
+                setTimeout(checkStatus, 2500);
+                if (isOptimizerRun) {
+                    setTimeout(checkStatus, 5000);
+                    setTimeout(checkStatus, 8000);
+                }
+            } else {
+                appendLog(`Failed to stop process: ${data.detail}`);
+                btnStop.disabled = false;
+            }
+        } catch (err) {
+            appendLog(`Abort error: ${err.message}`);
             btnStop.disabled = false;
         }
-    } catch (err) {
-        appendLog(`Abort error: ${err.message}`);
-        btnStop.disabled = false;
-    }
-});
+    });
+}
 
 // Download Archive
 if (btnDownload) {
@@ -1416,7 +2042,7 @@ async function updateBaseline(dataset, evidence, chi2, evidenceIsFinal, evidence
 // Check current status
 async function checkStatus() {
     try {
-        const response = await fetch(`${API_URL}/api/status`);
+        const response = await fetch(`${API_URL}/api/status`, { credentials: 'include' });
         if (response.status === 401) {
             showLoginModal(() => checkStatus());  // retry after login
             return;
@@ -1425,16 +2051,47 @@ async function checkStatus() {
         const data = await response.json();
         lastStatusData = data;
         
+        if (data.auto_apply_watchdog !== undefined && data.auto_apply_watchdog !== autoWatchdogEnabled) {
+            autoWatchdogEnabled = data.auto_apply_watchdog;
+            updateToggleUI();
+        }
+        
+        // Show/hide Optimizer tab button dynamically
+        const optBtn = document.getElementById('tab-btn-optimizer');
+        if (optBtn) {
+            optBtn.style.display = 'block';
+            // Highlight when optimizer is active
+            if (data.is_optimizer) {
+                optBtn.style.background = 'rgba(162, 155, 254, 0.3)';
+                optBtn.style.border = '1px solid #a29bfe';
+            } else {
+                optBtn.style.background = '';
+                optBtn.style.border = '';
+            }
+        }
+
         // Refresh drool-worthy derived params when we have new best-fit info
-        if (data.best_fit || data.chi2 || data.evidence) {
+        if (data.best_raw_params || data.best_chi2 !== null || data.log_evidence !== null || data.status === 'running' || data.status === 'completed') {
             refreshDerivedParameters();
+            fetchMultimodalComparison();
+            fetchMcmcDiagnostics();
+            fetchModeMetadata();
+             
+            // Refresh optimizer real-time convergence plot
+            if (data.is_optimizer) {
+                const optImg = document.getElementById('optimizer-plot-img');
+                if (optImg) {
+                    optImg.src = `${API_URL}/api/posteriors_plot?t=${Date.now()}`;
+                    optImg.style.display = 'block';
+                }
+            }
         }
         
         // Update Phone Sync link
         const phoneLinkContainer = document.getElementById('phone-link-container');
         const phoneLinkHref = document.getElementById('phone-link-href');
         if (phoneLinkContainer && phoneLinkHref) {
-            if (data.localtunnel_url) {
+            if (data.localtunnel_url && data.localtunnel_url.match(/^https?:\/\//i)) {
                 phoneLinkContainer.style.display = 'flex';
                 phoneLinkHref.href = data.localtunnel_url;
                 phoneLinkHref.textContent = data.localtunnel_url.replace(/^https?:\/\//, '');
@@ -1457,7 +2114,7 @@ async function checkStatus() {
         
         // Append external logs (from monitor script)
         if (data.external_logs && data.external_logs.length > 0) {
-            data.external_logs.forEach(log => appendLog(`<span style="color: #ff4757; font-weight: bold;">[ALERT] ${log}</span>`));
+            data.external_logs.forEach(log => appendLog(`[ALERT] ${log}`));
         }
         
         if (data.terminal_output && data.terminal_output.length > 0) {
@@ -1560,13 +2217,19 @@ async function checkStatus() {
         
         if (data.best_chi2 !== null && data.best_chi2 !== undefined) {
             statChi2.textContent = data.best_chi2.toFixed(2);
+            // Display which file/config is being tracked
+            if (statChi2File && (data.active_output_prefix || data.active_yaml_path)) {
+                const fileInfo = data.active_output_prefix ? `File: ${data.active_output_prefix}` : `Config: ${data.active_yaml_path || 'unknown'}`;
+                statChi2File.textContent = fileInfo;
+            }
             if (data.best_cmb !== null && data.best_cmb !== undefined) {
                 statChi2Cmb.textContent = data.best_cmb.toFixed(1);
-                statChi2Bao.textContent = data.best_bao.toFixed(1);
-                statChi2Sn.textContent = data.best_sn.toFixed(1);
+                statChi2Bao.textContent = data.best_bao !== null && data.best_bao !== undefined ? data.best_bao.toFixed(1) : "-";
+                statChi2Sn.textContent = data.best_sn !== null && data.best_sn !== undefined ? data.best_sn.toFixed(1) : "-";
             }
         } else {
             statChi2.textContent = "-";
+            if (statChi2File) statChi2File.textContent = "-";
             statChi2Cmb.textContent = "-";
             statChi2Bao.textContent = "-";
             statChi2Sn.textContent = "-";
@@ -1600,7 +2263,7 @@ async function checkStatus() {
             for (const [key, val] of Object.entries(data.best_raw_params)) {
                 if (!key.startsWith('chi2__') && !key.startsWith('minuslogprior')) {
                     let formattedVal = (typeof val === 'number') ? val.toPrecision(4) : val;
-                    rawHtml += `<div><span style="color:#00d2d3">${key}</span>: ${formattedVal}</div>`;
+                    rawHtml += `<div><span style="color:#00d2d3">${escHtml(key)}</span>: ${escHtml(String(formattedVal))}</div>`;
                 }
             }
             rawHtml += '</div>';
@@ -1621,7 +2284,7 @@ async function checkStatus() {
             constraintsCard.style.display = 'block';
             let constraintsHtml = '<div style="display: grid; grid-template-columns: 1.2fr 1fr; gap: 4px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 5px;">';
             data.constraints.forEach(c => {
-                constraintsHtml += `<div><span style="color:#00d2d3">${c.parameter}</span></div><div>${c.mean} &plusmn; ${c.error}</div>`;
+                constraintsHtml += `<div><span style="color:#00d2d3">${escHtml(c.parameter)}</span></div><div>${escHtml(String(c.mean))} &plusmn; ${escHtml(String(c.error))}</div>`;
             });
             constraintsHtml += '</div>';
             constraintsBody.innerHTML = constraintsHtml;
@@ -1780,6 +2443,68 @@ async function checkStatus() {
         if (data.status === 'completed') percent = 100;
         if (data.status === 'idle') percent = 0;
         
+        // FIX: Always switch to CosmicForge tab when is_optimizer is true
+        if (data.is_optimizer) {
+            if (data.status === 'running' || data.status === 'completed') {
+                window.switchMonitorTab('optimizer');
+                monitorTabAutoSwitched = true;
+            }
+            
+            if (optStatEvals) optStatEvals.textContent = data.dead_points || 0;
+            if (optStatChi2) optStatChi2.textContent = data.best_chi2 !== null ? data.best_chi2.toFixed(2) : "-";
+            // Display which file/config is being tracked for optimizer
+            if (optStatChi2File && (data.active_output_prefix || data.active_yaml_path)) {
+                const fileInfo = data.active_output_prefix ? `File: ${data.active_output_prefix}` : `Config: ${data.active_yaml_path || 'unknown'}`;
+                optStatChi2File.textContent = fileInfo;
+            }
+            if (optStatChi2Cmb) optStatChi2Cmb.textContent = data.best_cmb !== null ? data.best_cmb.toFixed(1) : "-";
+            if (optStatChi2Bao) optStatChi2Bao.textContent = data.best_bao !== null ? data.best_bao.toFixed(1) : "-";
+            if (optStatChi2Sn) optStatChi2Sn.textContent = data.best_sn !== null ? data.best_sn.toFixed(1) : "-";
+            
+            if (optStatPhase) {
+                if (data.status === 'completed') {
+                    optStatPhase.textContent = "Finished";
+                    optStatPhase.style.color = "#39ff14";
+                } else if (data.status === 'running') {
+                    if (data.dead_points < 120) {
+                        optStatPhase.textContent = "Local Search (BOBYQA)";
+                        optStatPhase.style.color = "#00d2d3";
+                    } else {
+                        optStatPhase.textContent = "Surrogate MCMC";
+                        optStatPhase.style.color = "#ff9ff3";
+                    }
+                } else {
+                    optStatPhase.textContent = "Idle";
+                    optStatPhase.style.color = "#a4b0be";
+                }
+            }
+            
+            // FIX: Use data directly instead of copying from Standard monitor elements
+            // This ensures CosmicForge monitor works even if Standard elements aren't updated yet
+            if (optStatCpu && data.cpu_percent !== undefined) {
+                optStatCpu.textContent = `${Math.round(data.cpu_percent)}%`;
+            }
+            if (optCpuGaugePath && data.cpu_percent !== undefined) {
+                const pct = Math.max(0, Math.min(100, data.cpu_percent));
+                const offset = 125.66 - (pct / 100) * 125.66;
+                optCpuGaugePath.style.strokeDashoffset = offset;
+                if (pct > 85) optCpuGaugePath.style.stroke = '#ff007f';
+                else if (pct > 50) optCpuGaugePath.style.stroke = '#ffb700';
+                else optCpuGaugePath.style.stroke = '#00d2d3';
+            }
+            if (optStatSpeed) optStatSpeed.textContent = data.speed || "-";
+            if (optStatEta) optStatEta.textContent = data.eta || "-";
+            
+            const optProgressPercentVal = (data.convergence_percent !== undefined) ? data.convergence_percent : 0;
+            if (optProgressPercent) optProgressPercent.textContent = `${optProgressPercentVal}%`;
+            if (optProgressFill) optProgressFill.style.width = `${optProgressPercentVal}%`;
+        } else {
+            // Reset auto-switch flag if not running optimizer
+            if (data.status === 'idle' || data.status === 'completed') {
+                monitorTabAutoSwitched = false;
+            }
+        }
+        
         // Update initialization progress bar
         if (data.status === 'running' || data.status === 'completed') {
             let p = (data.init_percent !== undefined && data.init_percent !== null) ? data.init_percent : 0;
@@ -1816,15 +2541,20 @@ async function checkStatus() {
         if (data.status === 'running') {
             isAutoRunning = false;
             btnStart.disabled = true;
+            if (btnStartOpt) btnStartOpt.disabled = true;
             btnResume.disabled = true;
             btnStop.disabled = false;
             
             let chi2Text = data.best_chi2 !== null ? data.best_chi2.toFixed(4) : 'evaluating';
             let logZText = data.log_evidence !== null ? data.log_evidence.toFixed(4) : 'evaluating';
         } else {
-            btnStart.disabled = false;
-            btnResume.disabled = false;
+            // Always disable Stop when not running, even during upload
             btnStop.disabled = true;
+            if (!isUploadingConfig) {
+                btnStart.disabled = false;
+                if (btnStartOpt) btnStartOpt.disabled = false;
+                btnResume.disabled = false;
+            }
         }
 
         // Manage persisted watchdog ignore state
@@ -1868,9 +2598,9 @@ async function checkStatus() {
                         currentProposedUpdates[alert.parameter] = {min: alert.new_min, max: alert.new_max};
                     }
                     return `<div style="margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.1);">
-                        <strong style="color: #ff9ff3; font-size: 1.1rem;">${alert.parameter}</strong><br>
-                        <span style="color: #feca57;">${alert.status}</span><br>
-                        <span style="color: #a4b0be; font-size: 0.85rem;">Suggestion: <span style="color: #fff;">${alert.suggestion}</span></span>
+                        <strong style="color: #ff9ff3; font-size: 1.1rem;">${escHtml(alert.parameter)}</strong><br>
+                        <span style="color: #feca57;">${escHtml(alert.status)}</span><br>
+                        <span style="color: #a4b0be; font-size: 0.85rem;">Suggestion: <span style="color: #fff;">${escHtml(alert.suggestion)}</span></span>
                     </div>`;
                 }).join("");
 
@@ -2038,8 +2768,19 @@ async function checkStatus() {
                               yamlNameLower.includes('lcdm') ||
                               yamlNameLower.includes('baseline');
             if (isLcdmRun) {
-                updateBaseline("planck_bao_pantheonplus_shoes", data.log_evidence, data.best_chi2, data.evidence_is_final, data.evidence_source);
-                if (checkAutoRunCustom && checkAutoRunCustom.checked && !isAutoRunning) {
+                const currentRunId = data.active_output_prefix || data.active_yaml_path;
+                const currentEvidence = data.log_evidence;
+                // Only update baseline when evidence is final
+                const shouldUpdate = data.evidence_is_final && (
+                    lastBaselineUpdateRun !== currentRunId || 
+                    (lastBaselineUpdateEvidence !== currentEvidence && lastBaselineUpdateRun === currentRunId)
+                );
+                if (shouldUpdate) {
+                    updateBaseline("planck_bao_pantheonplus_shoes", data.log_evidence, data.best_chi2, data.evidence_is_final, data.evidence_source);
+                    lastBaselineUpdateRun = currentRunId;
+                    lastBaselineUpdateEvidence = currentEvidence;
+                }
+                if (data.evidence_is_final && checkAutoRunCustom && checkAutoRunCustom.checked && !isAutoRunning) {
                     isAutoRunning = true;
                     appendLog(`[PIPELINE] Baseline ΛCDM completed. Preparing to auto-run custom model in 5 seconds...`);
                     setTimeout(() => {
@@ -2053,7 +2794,7 @@ async function checkStatus() {
                 } else {
                     appendLog('[PIPELINE] Live/preview evidence is visible for debugging only; final preference waits for PolyChord .stats.');
                 }
-                if (checkAutoRunLcdm && checkAutoRunLcdm.checked && !isAutoRunning) {
+                if (data.evidence_is_final && checkAutoRunLcdm && checkAutoRunLcdm.checked && !isAutoRunning) {
                     isAutoRunning = true;
                     appendLog(`[PIPELINE] Custom model completed. Preparing to auto-run baseline ΛCDM in 5 seconds...`);
                     setTimeout(() => {
@@ -2279,12 +3020,13 @@ function escHtml(str) {
 }
 
 // Console helper
-function appendLog(message) {
+function appendLog(message, { html = false } = {}) {
     // Remove initial placeholder if present
     if (localLogs.length === 1 && localLogs[0] === 'Waiting for run execution...') {
         localLogs = [];
     }
-    localLogs.push(`[${new Date().toLocaleTimeString()}] ${message}`);
+    const safeMessage = html ? String(message) : escHtml(String(message));
+    localLogs.push(`[${escHtml(new Date().toLocaleTimeString())}] ${safeMessage}`);
     if (localLogs.length > 50) localLogs.shift();
     renderLogs();
 }
@@ -2297,7 +3039,7 @@ function renderLogs() {
             return esc.replace(/(\[.*?\])/g, '<span style="color:#feca57">$1</span>');
         }).join('<br>') + '<br><br><span style="color:#a4b0be; font-weight:bold;">--- DASHBOARD STATUS LOGS ---</span><br>';
     }
-    html += localLogs.join('<br>');
+    html += localLogs.map(l => escHtml(String(l))).join('<br>');
     consoleBody.innerHTML = html;
     consoleBody.scrollTop = consoleBody.scrollHeight;
 }
@@ -2546,6 +3288,42 @@ ${strugglesText}`;
         });
     }
 
+    // 4.6 Copy Multimodal Comparison (new)
+    const btnCopyMultimodal = document.getElementById('btn-copy-multimodal');
+    if (btnCopyMultimodal) {
+        btnCopyMultimodal.addEventListener('click', () => {
+            const body = document.getElementById('multimodal-comparison-body');
+            if (!body) return;
+            let text = '--- Multimodal Cosmological Exploration Comparison ---\n';
+            text += body.innerText || body.textContent;
+            copyToClipboard(text, 'btn-copy-multimodal');
+        });
+    }
+
+    // 4.7 Copy MCMC Diagnostics
+    const btnCopyMcmcDiag = document.getElementById('btn-copy-mcmc-diag');
+    if (btnCopyMcmcDiag) {
+        btnCopyMcmcDiag.addEventListener('click', () => {
+            const body = document.getElementById('mcmc-diagnostics-body');
+            if (!body) return;
+            let text = '--- MCMC Diagnostics (ESS & R̂) ---\n';
+            text += body.innerText || body.textContent;
+            copyToClipboard(text, 'btn-copy-mcmc-diag');
+        });
+    }
+
+    // 4.8 Copy Mode Metadata
+    const btnCopyModeMeta = document.getElementById('btn-copy-mode-meta');
+    if (btnCopyModeMeta) {
+        btnCopyModeMeta.addEventListener('click', () => {
+            const body = document.getElementById('mode-metadata-body');
+            if (!body) return;
+            let text = '--- Mode Metadata & Quality Metrics ---\n';
+            text += body.innerText || body.textContent;
+            copyToClipboard(text, 'btn-copy-mode-meta');
+        });
+    }
+
     // 5. Copy Unified AI Diagnostics Prompt
     const btnCopyAiPrompt = document.getElementById('btn-copy-ai-prompt');
     if (btnCopyAiPrompt) {
@@ -2779,6 +3557,47 @@ ${strugglesText}`;
                 });
             }
 
+            // CosmicForge Optimizer Run Results
+            let cosmicforgeSection = "CosmicForge optimizer not active (standard PolyChord/MCMC run).";
+            if (lastStatusData.is_optimizer) {
+                const totalRuns = lastStatusData.optimizer_total_runs || 0;
+                const currentRun = lastStatusData.optimizer_current_run || 0;
+                const runResults = lastStatusData.optimizer_run_results || [];
+                const totalEvals = lastStatusData.dead_points || 0;
+
+                let runTable = "";
+                if (runResults.length > 0) {
+                    // Sort by chi2 ascending so best is first
+                    const sorted = [...runResults].sort((a, b) => a.chi2 - b.chi2);
+                    const globalBest = sorted[0].chi2;
+                    runTable = "Completed runs (sorted best → worst):\n";
+                    runResults.forEach(r => {
+                        const label = r.label || r.name || `Run ${r.run}`;
+                        const isBest = Math.abs(r.chi2 - globalBest) < 1e-3;
+                        runTable += `- ${label}: χ² = ${r.chi2.toFixed(4)}${isBest ? ' ⭐ GLOBAL BEST' : ''}\n`;
+                    });
+                } else {
+                    runTable = "No completed optimizer runs yet (first evaluation in progress).\n";
+                }
+
+                const phaseLabel = currentRun > 0 && currentRun <= totalRuns
+                    ? `Run ${currentRun}/${totalRuns} in progress`
+                    : (totalRuns > 0 ? `All ${totalRuns} runs complete` : "Initializing...");
+
+                const viabilityInfo = lastStatusData.run_health
+                    ? `- CLASS Boltzmann Stability: ${lastStatusData.run_health.stability_percent !== undefined ? lastStatusData.run_health.stability_percent.toFixed(1) + '%' : 'N/A'}`
+                    : '';
+
+                cosmicforgeSection = `CosmicForge Multi-Start BOBYQA Optimizer:
+- Phase: ${phaseLabel}
+- Total function evaluations: ${totalEvals}
+- Config: ${lastStatusData.active_yaml_path || 'prtoe_standard.yaml'}
+${viabilityInfo}
+
+${runTable}
+- Global best χ² (across all runs): ${lastStatusData.best_chi2 !== null ? lastStatusData.best_chi2.toFixed(4) : 'N/A'}`;
+            }
+
             const promptText = `Here is the cosmological data from my CLASS & Cobaya run. Please analyze these diagnostics, evaluate if the custom model resolves the H0 and S8 tensions, check the model struggles/stability, and explain the physical implications:
 
 ### Run Status
@@ -2842,6 +3661,9 @@ ${classErrorLogsText}
 ${tensionVal}
 - Struggles (Boltzmann Solver Failures): ${strugglesText}
 
+### CosmicForge Optimizer Run Results
+${cosmicforgeSection}
+
 ### Best-Fit Chi2 Breakdown
 - Total Chi2: ${chi2Total}
 - CMB Chi2: ${chi2Cmb}
@@ -2858,6 +3680,108 @@ ${bestFitList}
 ${constraintsList}`;
 
             copyToClipboard(promptText, 'btn-copy-ai-prompt');
+        });
+    }
+
+    // 🌌 Dedicated CosmicForge Optimizer AI Prompt
+    const btnCopyAiCosmicforge = document.getElementById('btn-copy-ai-cosmicforge');
+    if (btnCopyAiCosmicforge) {
+        btnCopyAiCosmicforge.addEventListener('click', () => {
+            if (!lastStatusData) {
+                alert('No run data available yet. Start a CosmicForge optimizer run first.');
+                return;
+            }
+
+            const isOpt = lastStatusData.is_optimizer;
+            const runResults = lastStatusData.optimizer_run_results || [];
+            const totalRuns = lastStatusData.optimizer_total_runs || 0;
+            const currentRun = lastStatusData.optimizer_current_run || 0;
+            const totalEvals = lastStatusData.dead_points || 0;
+            const bestChi2 = lastStatusData.best_chi2;
+            const bestParams = lastStatusData.best_raw_params || {};
+
+            // Build sorted run table
+            let runTableStr = '';
+            if (runResults.length > 0) {
+                const sorted = [...runResults].sort((a, b) => a.chi2 - b.chi2);
+                const globalBest = sorted[0].chi2;
+                sorted.forEach((r, i) => {
+                    const label = r.label || r.name || `Run ${r.run}`;
+                    const isBest = Math.abs(r.chi2 - globalBest) < 1e-3;
+                    runTableStr += `${i + 1}. ${label}: χ² = ${r.chi2.toFixed(4)}${isBest ? ' ← GLOBAL BEST' : ''}\n`;
+                });
+            } else {
+                runTableStr = 'No completed runs yet — optimizer is still on the first run.\n';
+            }
+
+            // Build best-fit params
+            let bestParamStr = '';
+            for (const [key, val] of Object.entries(bestParams)) {
+                if (!key.startsWith('chi2__') && !key.startsWith('minuslogprior')) {
+                    bestParamStr += `  ${key} = ${typeof val === 'number' ? val.toPrecision(7) : val}\n`;
+                }
+            }
+            if (!bestParamStr) bestParamStr = '  (Not yet determined — run still in progress)\n';
+
+            // Chi2 per probe from most recent eval (if available in run log)
+            const chi2Cmb = lastStatusData.best_cmb;
+            const chi2Bao = lastStatusData.best_bao;
+            const chi2Sn = lastStatusData.best_sn;
+            const chi2Lensing = lastStatusData.best_lensing;
+            const chi2Desi = lastStatusData.best_desi;
+
+            const probeBreakdown = [
+                chi2Cmb !== null && chi2Cmb !== undefined ? `  CMB (Planck 2018): χ² = ${chi2Cmb.toFixed(2)}` : null,
+                chi2Bao !== null && chi2Bao !== undefined ? `  BAO (6dF+SDSS+DESI): χ² = ${chi2Bao.toFixed(2)}` : null,
+                chi2Sn !== null && chi2Sn !== undefined ? `  SN (Pantheon+SH0ES): χ² = ${chi2Sn.toFixed(2)}` : null,
+                chi2Lensing !== null && chi2Lensing !== undefined ? `  CMB Lensing: χ² = ${chi2Lensing.toFixed(2)}` : null,
+                chi2Desi !== null && chi2Desi !== undefined ? `  DESI BAO: χ² = ${chi2Desi.toFixed(2)}` : null,
+            ].filter(Boolean).join('\n');
+
+            const tensionInfo = lastStatusData.tensions
+                ? `- H0 tension: ${lastStatusData.tensions.H0_status || 'Unknown'} (${lastStatusData.tensions.H0_tension !== null ? lastStatusData.tensions.H0_tension.toFixed(2) + 'σ' : '?'} vs SH0ES R22)
+- S8 tension: ${lastStatusData.tensions.S8_status || 'Unknown'} (KiDS: ${lastStatusData.tensions.S8_tension_kids !== null ? lastStatusData.tensions.S8_tension_kids.toFixed(2) + 'σ' : '?'}, DES: ${lastStatusData.tensions.S8_tension_des !== null ? lastStatusData.tensions.S8_tension_des.toFixed(2) + 'σ' : '?'})
+- Overall: ${lastStatusData.tension_status || 'Unknown'}`
+                : 'Tension data not yet computed.';
+
+            const cosmicforgePrompt = `=== CosmicForge Multi-Start BOBYQA Optimization Results ===
+Model: PRTOE (Phantom Rip Theory of Everything)
+Config: ${lastStatusData.active_yaml_path || 'prtoe_standard.yaml'}
+Run status: ${lastStatusData.status || 'unknown'}
+Optimizer: Multi-start BOBYQA (${isOpt ? 'Active' : 'Standard/PolyChord run, optimizer inactive'})
+
+--- MULTI-START RUN SUMMARY (${runResults.length} of ${totalRuns} runs finished) ---
+Current phase: Run ${currentRun}/${totalRuns}
+Total BOBYQA function evaluations: ${totalEvals}
+
+${runTableStr}
+--- GLOBAL BEST FIT ---
+Global best χ² total: ${bestChi2 !== null && bestChi2 !== undefined ? bestChi2.toFixed(4) : 'In progress...'}
+
+Per-probe χ² breakdown at best-fit:
+${probeBreakdown || '  (Full breakdown not available at this checkpoint — requires a finished run)'}
+
+Best-fit parameter values:
+${bestParamStr}
+--- COSMOLOGICAL TENSION STATUS ---
+${tensionInfo}
+
+--- ANALYSIS REQUESTED ---
+Please analyze the following aspects of this PRTOE cosmological optimization:
+
+1. BOBYQA CONVERGENCE: Does the spread in χ² values across the multi-start runs (see table above) suggest the optimizer has found a true global minimum, or are multiple local minima competing? What does the χ² difference between best and worst runs tell us about the likelihood landscape topology?
+
+2. PRTOE PARAMETER INTERPRETATION: Given the best-fit values for xi_prtoe, zeta_prtoe, V0_prtoe, and the other PRTOE-specific parameters, what do these imply physically? Is the PRTOE coupling (xi, zeta) consistent with observational bounds from other experiments?
+
+3. χ² ASSESSMENT: The global best χ² = ${bestChi2 !== null && bestChi2 !== undefined ? bestChi2.toFixed(4) : 'N/A'}. For context, ΛCDM typically achieves χ² ≈ 2510–2520 on Planck+BAO+SN. Is this improvement statistically significant? What Δχ² threshold matters here given the extra PRTOE degrees of freedom?
+
+4. TENSION RESOLUTION: Based on the best-fit parameters (H0, omega_cdm, S8 via sigma8 and omega_m), does PRTOE reduce the H0 tension vs SH0ES and the S8 tension vs KiDS/DES? By how many sigma?
+
+5. NEXT STEPS: Given these optimizer results, what would you recommend as the next scientific step — a full PolyChord nested sampling run to get Bayesian evidence log(Z), targeted MCMC for posteriors, or further seeded multistart optimization?
+
+Provide a concise but rigorous analysis suitable for inclusion in a cosmology paper methods section.`;
+
+            copyToClipboard(cosmicforgePrompt, 'btn-copy-ai-cosmicforge');
         });
     }
 
@@ -2922,22 +3846,61 @@ Interpret the BF10. If >>1, the data require the extra PRTOE parameters. Contras
             const jeff = document.getElementById('jeffreys-text') ? document.getElementById('jeffreys-text').textContent : "-";
             const delta = document.getElementById('val-delta') ? document.getElementById('val-delta').textContent : "-";
 
-            const diagnosticPrompt = buildMainDiagnosticPrompt();
+            const diagnosticPrompt = `You are a theoretical cosmologist analyzing a CLASS/Cobaya/PolyChord run.
 
-            // Targeted stacking prompt (already built in its handler, but duplicate here for all)
+Run status: ${status}
+Active config: ${lastStatusData.active_yaml_path || 'unknown'}
+
+Advanced metrics:
+${adv}
+
+Phone tunnel: ${phoneLink}
+
+Jeffreys scale factor: ${jeff}
+Delta logZ: ${delta}
+
+Best-fit params: ${lastStatusData.best_raw_params ? JSON.stringify(lastStatusData.best_raw_params) : 'N/A'}`;
+
+            // Targeted stacking prompt
             const stackingPrompt = `Stacking-specific: Given the weights and the run data above, optimize and justify the ensemble predictive distribution vs picking one model. How does this change conclusions about PRTOE vs LCDM?`;
 
             // Savage specific
             const savagePrompt = `Savage-Dickey-specific: Using the BF and the context, compute and interpret the exact evidence for the extra parameters. Contrast to what BIC would say (BIC would penalize the extra params heavily even if the posterior at 0 is tiny). Provide ready-to-paste LaTeX.`;
 
-            // Paper writing prompt (new)
+            // CosmicForge optimizer prompt (new — includes multistart run table)
+            const cfRunResults = lastStatusData.optimizer_run_results || [];
+            let cfRunTableStr = '';
+            if (cfRunResults.length > 0) {
+                const cfSorted = [...cfRunResults].sort((a, b) => a.chi2 - b.chi2);
+                const cfBest = cfSorted[0].chi2;
+                cfSorted.forEach((r, i) => {
+                    const lbl = r.label || r.name || `Run ${r.run}`;
+                    cfRunTableStr += `${i+1}. ${lbl}: χ² = ${r.chi2.toFixed(4)}${Math.abs(r.chi2 - cfBest) < 1e-3 ? ' ← GLOBAL BEST' : ''}\n`;
+                });
+            } else {
+                cfRunTableStr = lastStatusData.is_optimizer
+                    ? 'Optimizer active — first run not yet finished.\n'
+                    : 'Not an optimizer run (PolyChord/MCMC mode).\n';
+            }
+            const cosmicforgeAllPrompt = `=== CosmicForge BOBYQA Optimizer Results ===
+Config: ${lastStatusData.active_yaml_path || 'prtoe_standard.yaml'}
+Status: ${lastStatusData.status || 'unknown'} | Runs: ${lastStatusData.optimizer_current_run || 0}/${lastStatusData.optimizer_total_runs || 0} | Evals: ${lastStatusData.dead_points || 0}
+
+Multi-start run χ² table (sorted best→worst):
+${cfRunTableStr}
+Global best χ²: ${lastStatusData.best_chi2 !== null && lastStatusData.best_chi2 !== undefined ? lastStatusData.best_chi2.toFixed(4) : 'N/A'}
+Best-fit params: ${lastStatusData.best_raw_params ? JSON.stringify(lastStatusData.best_raw_params, null, 2) : 'N/A'}
+
+Analyze convergence, PRTOE parameter significance, tension resolution, and recommend next steps.`;
+
+            // Paper writing prompt
             const paperPrompt = `You are helping write a cosmology paper. Given ALL the above dashboard output (evidence, PSIS-LOO with k diagnostics, stacking weights, Savage-Dickey BFs, tensions resolved or not, PPC p-values, best-fit, provenance), draft:
 1. A 250-word abstract highlighting how the full Bayesian toolkit (not AIC/BIC) shows the result.
 2. A paragraph for the model selection section explaining why we use PSIS-LOO + stacking + Savage-Dickey instead of BIC.
 3. Suggested table captions and figure ideas for the new metrics (e.g. "Pareto k per probe for the PRTOE run").
 Use exact numbers from the data. Be precise and cite the methods (Vehtari PSIS, Yao stacking, Dickey-Savage).`;
 
-            // Full context / all-in-one for multi-turn
+            // Full context
             const fullContextPrompt = `FULL SESSION CONTEXT FOR AI (paste this first in a new chat):
 [All the diagnostic + advanced + phone + new features note from above, plus the entire scraped run state from the main diagnostic prompt.]
 
@@ -2952,13 +3915,16 @@ ${stackingPrompt}
 === PROMPT 3: SAVAGE-DICKEY NESTED ===
 ${savagePrompt}
 
-=== PROMPT 4: PAPER WRITING AID ===
+=== PROMPT 4: COSMICFORGE OPTIMIZER RESULTS ===
+${cosmicforgeAllPrompt}
+
+=== PROMPT 5: PAPER WRITING AID ===
 ${paperPrompt}
 
-=== PROMPT 5: FULL MULTI-TURN CONTEXT ===
+=== PROMPT 6: FULL MULTI-TURN CONTEXT ===
 ${fullContextPrompt}
 
---- End of All AI Prompts from CosmicDashboard. Use sequentially in your AI (e.g. Gemini/Claude) for best results. All new features (PSIS-LOO k, Stacking, Savage-Dickey, phone robustness, etc.) are included above.`;
+--- End of All AI Prompts from CosmicDashboard. Use sequentially in your AI (e.g. Gemini/Claude) for best results. All new features (PSIS-LOO k, Stacking, Savage-Dickey, CosmicForge optimizer, phone robustness, etc.) are included above.`;
 
             copyToClipboard(allPrompts, 'btn-copy-all-ai-prompts');
         });
@@ -3521,7 +4487,9 @@ async function refreshCompare() {
             const logzStr = m.logz !== null ? `${m.logz.toFixed(2)} +/- ${m.logz_err.toFixed(2)}` : "-";
             const h0Str = m.h0_tension !== null ? `${m.h0_tension.toFixed(2)}σ (${m.h0_val.toFixed(2)})` : (m.h0_val !== null ? m.h0_val.toFixed(2) : "-");
             const s8Str = m.s8_tension !== null ? `${m.s8_tension.toFixed(2)}σ (${m.s8_val.toFixed(3)})` : (m.s8_val !== null ? m.s8_val.toFixed(3) : "-");
-            const wParams = `${m.w0.toFixed(2)}, ${m.wa.toFixed(2)}`;
+            const w0 = m.w0 !== null && m.w0 !== undefined ? m.w0.toFixed(2) : "-";
+            const wa = m.wa !== null && m.wa !== undefined ? m.wa.toFixed(2) : "-";
+            const wParams = `${w0}, ${wa}`;
             
             const tr = document.createElement('tr');
             tr.style.borderBottom = "1px solid rgba(255,255,255,0.05)";
@@ -3710,7 +4678,7 @@ async function handleSamplerRecovery(widenPercent = 0.20, proposalScale = 2.0) {
     if (btn) btn.disabled = true;
     if (btnStag) btnStag.disabled = true;
     
-    const applyWatchdog = document.getElementById('chk-apply-watchdog')?.checked ?? true;
+    const applyWatchdog = document.getElementById('chk-apply-watchdog')?.checked ?? false;
     const watchdogMsg = applyWatchdog ? " (with Watchdog recommendations)" : " (manual widening only)";
     appendLog(`[PIPELINE] Sending sampler recovery request. Priors widening by 20%, proposal scale widening by 2x${watchdogMsg}...`);
     try {
@@ -4108,7 +5076,7 @@ async function refreshLikelihoodTerrain() {
     const p2 = ySelect.value || "omega_cdm";
     
     try {
-        const res = await fetch(`${API_URL}/api/likelihood_terrain?param1=${p1}&param2=${p2}&config_name=${encodeURIComponent(activeConfig)}`);
+        const res = await fetch(`${API_URL}/api/likelihood_terrain?param1=${encodeURIComponent(p1)}&param2=${encodeURIComponent(p2)}&config_name=${encodeURIComponent(activeConfig)}`);
         if (res.ok) {
             const data = await res.json();
             if (data.status === "success" && data.points) {
@@ -4294,6 +5262,7 @@ async function refreshTemplatesList() {
                     "lcdm_baseline": "ΛCDM Baseline",
                     "prtoe_standard": "PRTOE Standard",
                     "wcdm_test": "wCDM Test",
+                    "ede_test": "EDE Test (Model Zoo)",
                     "last_run": "Last Run"
                 };
                 
@@ -4327,7 +5296,7 @@ async function refreshChainQuality() {
     const selectedParam = selectEl.value || "H0";
     
     try {
-        const res = await fetch(`${API_URL}/api/chain_quality?param=${selectedParam}&config_name=${encodeURIComponent(activeConfig)}`);
+        const res = await fetch(`${API_URL}/api/chain_quality?param=${encodeURIComponent(selectedParam)}&config_name=${encodeURIComponent(activeConfig)}`);
         if (res.ok) {
             const data = await res.json();
             if (data.status === "success") {
@@ -4684,7 +5653,7 @@ async function handleCompareRuns() {
 
                     html += `
                         <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
-                            <td style="padding: 6px; font-weight: bold; color: #ff9ff3;">${param}</td>
+                            <td style="padding: 6px; font-weight: bold; color: #ff9ff3;">${escHtml(String(param))}</td>
                             <td style="padding: 6px; font-family: var(--font-mono);">${meanA.toFixed(4)} &plusmn; ${errA.toFixed(4)}</td>
                             <td style="padding: 6px; font-family: var(--font-mono);">${meanB.toFixed(4)} &plusmn; ${errB.toFixed(4)}</td>
                             <td style="padding: 6px; font-family: var(--font-mono); color: ${shiftColor};">${shift >= 0 ? '+' : ''}${shift.toFixed(4)}</td>
@@ -4776,27 +5745,55 @@ async function refreshCheckpointsList() {
                     return;
                 }
                 
-                listContainer.innerHTML = data.checkpoints.map(cp => {
+                listContainer.innerHTML = '';
+                data.checkpoints.forEach(cp => {
                     const pctText = cp.percentage !== null ? `${cp.percentage}%` : 'unknown %';
                     const deadText = cp.dead_points ? `${cp.dead_points} dead pts` : '';
                     const detail = `${pctText} (${deadText || 'no points'}) - ${cp.created_time}`;
-                    return `
-                        <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; background: rgba(255,255,255,0.03); border-radius: 4px; border: 1px solid rgba(255,255,255,0.05);">
-                            <div style="display: flex; flex-direction: column; gap: 2px;">
-                                <span style="font-weight: bold; color: #ff9ff3;">${cp.name}</span>
-                                <span style="font-size: 0.7rem; color: #a4b0be;">${detail}</span>
-                            </div>
-                            <button class="btn btn-secondary btn-restore-checkpoint" data-checkpoint="${cp.name}" style="padding: 3px 8px; font-size: 0.72rem; cursor: pointer; border-radius: 3px;">Restore</button>
-                        </div>
-                    `;
-                }).join('');
-                
-                // Add event listeners to restore buttons
-                listContainer.querySelectorAll('.btn-restore-checkpoint').forEach(btn => {
-                    btn.addEventListener('click', () => {
-                        const name = btn.getAttribute('data-checkpoint');
-                        restoreCheckpoint(name);
+                    
+                    const itemDiv = document.createElement('div');
+                    itemDiv.style.display = 'flex';
+                    itemDiv.style.justifyContent = 'space-between';
+                    itemDiv.style.alignItems = 'center';
+                    itemDiv.style.padding = '6px 8px';
+                    itemDiv.style.background = 'rgba(255,255,255,0.03)';
+                    itemDiv.style.borderRadius = '4px';
+                    itemDiv.style.border = '1px solid rgba(255,255,255,0.05)';
+                    
+                    const infoDiv = document.createElement('div');
+                    infoDiv.style.display = 'flex';
+                    infoDiv.style.flexDirection = 'column';
+                    infoDiv.style.gap = '2px';
+                    
+                    const nameSpan = document.createElement('span');
+                    nameSpan.style.fontWeight = 'bold';
+                    nameSpan.style.color = '#ff9ff3';
+                    nameSpan.textContent = cp.name;
+                    
+                    const detailSpan = document.createElement('span');
+                    detailSpan.style.fontSize = '0.7rem';
+                    detailSpan.style.color = '#a4b0be';
+                    detailSpan.textContent = detail;
+                    
+                    infoDiv.appendChild(nameSpan);
+                    infoDiv.appendChild(detailSpan);
+                    
+                    const restoreBtn = document.createElement('button');
+                    restoreBtn.className = 'btn btn-secondary btn-restore-checkpoint';
+                    restoreBtn.dataset.checkpoint = cp.name;
+                    restoreBtn.style.padding = '3px 8px';
+                    restoreBtn.style.fontSize = '0.72rem';
+                    restoreBtn.style.cursor = 'pointer';
+                    restoreBtn.style.borderRadius = '3px';
+                    restoreBtn.textContent = 'Restore';
+                    
+                    restoreBtn.addEventListener('click', () => {
+                        restoreCheckpoint(cp.name);
                     });
+                    
+                    itemDiv.appendChild(infoDiv);
+                    itemDiv.appendChild(restoreBtn);
+                    listContainer.appendChild(itemDiv);
                 });
             }
         }
@@ -5163,7 +6160,7 @@ async function checkIntergalacticTrigger() {
                 if (delta_logz >= 5.0) {
                     intergalacticPlaying = true;
                     localStorage.setItem('intergalacticPlayed', 'true');
-                    appendLog("<span style='color: #ff9ff3; font-weight: bold;'>🌌 [CELEBRATION] PRTOE has strong evidence (ΔlogZ = " + delta_logz.toFixed(2) + " >= 5)! Playing Beastie Boys: Intergalactic! 🚀</span>");
+                    appendLog("<span style='color: #ff9ff3; font-weight: bold;'>🌌 [CELEBRATION] PRTOE has strong evidence (ΔlogZ = " + delta_logz.toFixed(2) + " >= 5)! Playing Beastie Boys: Intergalactic! 🚀</span>", { html: true });
                     playIntergalacticSynth();
                 }
             }
@@ -5178,6 +6175,25 @@ function playIntergalacticSynth() {
     // Using a reliable YouTube embed that allows autoplay
     
     try {
+        // Check if user has opted in to third-party YouTube autoplay
+        const youtubeOptIn = localStorage.getItem('youtubeAutoplayOptIn') === 'true';
+        
+        if (!youtubeOptIn) {
+            // Use local synth only if user hasn't opted in to YouTube
+            if ('speechSynthesis' in window) {
+                const u = new SpeechSynthesisUtterance("Intergalactic, planetary, planetary, intergalactic.");
+                u.pitch = 0.5;
+                u.rate = 0.82;
+                window.speechSynthesis.speak(u);
+            }
+            appendLog("<span style='color: #ff9ff3; font-weight: bold;'>🎵 Celebration! Enable YouTube autoplay in settings for full song 🎵</span>", { html: true });
+            setTimeout(() => {
+                intergalacticPlaying = false;
+                appendLog("<span style='color: #00d2ff;'>🌌 Celebration complete! 🌌</span>", { html: true });
+            }, 5000);
+            return;
+        }
+        
         // Create an audio element with the full song
         const audio = new Audio();
         
@@ -5188,12 +6204,12 @@ function playIntergalacticSynth() {
         // Create a hidden iframe to play the full song from YouTube
         const iframe = document.createElement('iframe');
         iframe.style.display = 'none';
-        iframe.allow = 'autoplay';
-        iframe.src = 'https://www.youtube.com/embed/qORYO0atB6g?autoplay=1&start=0';
+        iframe.allow = 'autoplay; encrypted-media';
+        iframe.src = 'https://www.youtube.com/embed/qORYO0atB6g?autoplay=1&mute=0&start=0';
         document.body.appendChild(iframe);
         
         // Show a celebration message with song info
-        appendLog("<span style='color: #ff9ff3; font-weight: bold;'>🎵 Now playing: Beastie Boys - Intergalactic (Full Song) 🎵</span>");
+        appendLog("<span style='color: #ff9ff3; font-weight: bold;'>🎵 Now playing: Beastie Boys - Intergalactic (Full Song) 🎵</span>", { html: true });
         
         // Also play the vocoder voice for extra effect at the start
         if ('speechSynthesis' in window) {
@@ -5209,7 +6225,7 @@ function playIntergalacticSynth() {
                 iframe.parentNode.removeChild(iframe);
             }
             intergalacticPlaying = false;
-            appendLog("<span style='color: #00d2ff;'>🌌 Celebration complete! 🌌</span>");
+            appendLog("<span style='color: #00d2ff;'>🌌 Celebration complete! 🌌</span>", { html: true });
         }, 235000); // 235 seconds to ensure full song plays
         
     } catch (e) {
@@ -5269,6 +6285,199 @@ function playIntergalacticSynth() {
 
 // --- Simple in-app Login Modal for "remember me" flow (replaces repeated browser Basic Auth prompts)
 // Called when API returns 401. Posts to /api/login which sets httpOnly cookie.
+// === MCMC Diagnostics & Mode Metadata Rendering ===
+
+async function fetchMcmcDiagnostics() {
+    const diagCard = document.getElementById('mcmc-diagnostics-card');
+    const diagBody = document.getElementById('mcmc-diagnostics-body');
+    if (!diagCard || !diagBody) return;
+    
+    try {
+        // Pass output_prefix so backend finds data even when state.active_output_prefix
+        // is empty (e.g. optimizer was launched manually, not via dashboard Start button)
+        // Fall back to the known running prefix if not in status data.
+        const _cfPrefix = (typeof lastStatusData !== 'undefined' && lastStatusData && lastStatusData.active_output_prefix)
+            ? lastStatusData.active_output_prefix
+            : (typeof lastStatusData !== 'undefined' && lastStatusData && lastStatusData.is_optimizer ? null : 'chains/prtoe_poly');
+        const _cfQ = _cfPrefix ? `?output_prefix=${encodeURIComponent(_cfPrefix)}` : '';
+        const response = await fetch(`${API_URL}/api/run_summary${_cfQ}`, { credentials: 'include' });
+        if (!response.ok) {
+            diagCard.style.display = 'none';
+            return;
+        }
+        const data = await response.json();
+        
+        if (!data.modes || data.modes.length === 0) {
+            diagCard.style.display = 'none';
+            return;
+        }
+        
+        // Check if any mode has MCMC diagnostics
+        const hasMcmcData = data.modes.some(m => m.mcmc_diagnostics && Object.keys(m.mcmc_diagnostics).length > 0);
+        if (!hasMcmcData) {
+            diagCard.style.display = 'none';
+            return;
+        }
+        
+        diagCard.style.display = 'block';
+        let html = '<div style="overflow-x: auto; font-size: 0.75rem; line-height: 1.4;">';
+        
+        data.modes.forEach((mode, idx) => {
+            if (!mode.mcmc_diagnostics) return;
+            
+            const diag = mode.mcmc_diagnostics;
+            html += `<div style="margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.1);">
+                <div style="color: #00d2d3; font-weight: bold; margin-bottom: 6px;">Mode ${idx + 1}: ${escHtml(mode.name || 'Unnamed')}</div>`;
+            
+            // Overall diagnostics
+            if (diag.acceptance_rate !== undefined) {
+                const accRate = parseFloat(diag.acceptance_rate) * 100;
+                let accColor = accRate >= 25 && accRate <= 50 ? '#10ac84' : '#ff9f43';
+                html += `<div>Acceptance Rate: <span style="color: ${accColor}; font-weight: bold;">${accRate.toFixed(1)}%</span></div>`;
+            }
+            
+            if (diag.chain_length !== undefined) {
+                html += `<div>Chain Length: <span style="color: #3498db; font-weight: bold;">${diag.chain_length.toLocaleString()}</span></div>`;
+            }
+            
+            // Per-parameter ESS and R̂
+            if (diag.ess_per_param || diag.rhat_per_param) {
+                html += `<div style="margin-top: 6px; margin-bottom: 4px; color: #a4b0be; font-size: 0.7rem; text-transform: uppercase;">Per-Parameter Diagnostics:</div>`;
+                html += `<table style="width: 100%; border-collapse: collapse; font-size: 0.7rem;">
+                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.08); color: #a4b0be;">
+                        <th style="text-align: left; padding: 2px 4px;">Parameter</th>
+                        <th style="text-align: right; padding: 2px 4px;">ESS</th>
+                        <th style="text-align: right; padding: 2px 4px;">R̂</th>
+                    </tr>`;
+                
+                const paramNames = Object.keys(diag.ess_per_param || {});
+                paramNames.forEach(param => {
+                    const ess = diag.ess_per_param ? diag.ess_per_param[param] : '-';
+                    const rhat = diag.rhat_per_param ? diag.rhat_per_param[param] : '-';
+                    
+                    let essColor = '#a4b0be';
+                    let rhatColor = '#a4b0be';
+                    
+                    if (typeof ess === 'number') {
+                        essColor = ess >= 100 ? '#10ac84' : '#ff9f43';
+                    }
+                    if (typeof rhat === 'number') {
+                        rhatColor = rhat < 1.05 ? '#10ac84' : '#ee5253';
+                    }
+                    
+                    html += `<tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                        <td style="padding: 2px 4px; color: #a4b0be;">${escHtml(param)}</td>
+                        <td style="text-align: right; padding: 2px 4px; color: ${essColor}; font-weight: bold;">${typeof ess === 'number' ? ess.toFixed(0) : ess}</td>
+                        <td style="text-align: right; padding: 2px 4px; color: ${rhatColor}; font-weight: bold;">${typeof rhat === 'number' ? rhat.toFixed(4) : rhat}</td>
+                    </tr>`;
+                });
+                
+                html += `</table>`;
+            }
+            
+            html += `</div>`;
+        });
+        
+        html += '</div>';
+        diagBody.innerHTML = html;
+        
+    } catch (err) {
+        console.error("Error fetching MCMC diagnostics:", err);
+        diagCard.style.display = 'none';
+    }
+}
+
+async function fetchModeMetadata() {
+    const metaCard = document.getElementById('mode-metadata-card');
+    const metaBody = document.getElementById('mode-metadata-body');
+    const surrogatCard = document.getElementById('surrogate-usage-card');
+    const surrogateBody = document.getElementById('surrogate-usage-body');
+    
+    if (!metaCard || !metaBody) return;
+    
+    try {
+        const _cfPrefix2 = (typeof lastStatusData !== 'undefined' && lastStatusData && lastStatusData.active_output_prefix)
+            ? lastStatusData.active_output_prefix
+            : 'chains/prtoe_poly';
+        const _cfQ2 = _cfPrefix2 ? `?output_prefix=${encodeURIComponent(_cfPrefix2)}` : '';
+        const response = await fetch(`${API_URL}/api/run_summary${_cfQ2}`, { credentials: 'include' });
+        if (!response.ok) {
+            metaCard.style.display = 'none';
+            if (surrogatCard) surrogatCard.style.display = 'none';
+            return;
+        }
+        const data = await response.json();
+        
+        if (!data.modes || data.modes.length === 0) {
+            metaCard.style.display = 'none';
+            if (surrogatCard) surrogatCard.style.display = 'none';
+            return;
+        }
+        
+        metaCard.style.display = 'block';
+        let html = `<table style="width: 100%; border-collapse: collapse; text-align: left;">
+            <thead>
+                <tr style="border-bottom: 1px solid rgba(255,255,255,0.15);">
+                    <th style="padding: 6px; color: #00d2d3; text-align: left; font-size: 0.75rem;">Mode</th>
+                    <th style="padding: 6px; color: #10ac84; text-align: center; font-size: 0.75rem;">Viability %</th>
+                    <th style="padding: 6px; color: #00d2d3; text-align: center; font-size: 0.75rem;">Stability</th>
+                    <th style="padding: 6px; color: #f1c40f; text-align: center; font-size: 0.75rem;">Surrogate Hit %</th>
+                </tr>
+            </thead>
+            <tbody>`;
+        
+        let totalEvals = 0;
+        let totalSurrogateEvals = 0;
+        
+        data.modes.forEach((mode, idx) => {
+            const viability = mode.viability_score !== undefined ? parseFloat(mode.viability_score).toFixed(1) : '-';
+            const stability = mode.stability !== undefined && mode.stability !== null ? mode.stability : '-';
+            const surrogateHitRate = mode.surrogate_hit_rate !== undefined ? (parseFloat(mode.surrogate_hit_rate) * 100).toFixed(1) : '-';
+            
+            let viabilityColor = viability !== '-' && parseFloat(viability) >= 95 ? '#10ac84' : '#ee5253';
+            let surrogateColor = surrogateHitRate !== '-' && parseFloat(surrogateHitRate) > 0 ? '#f1c40f' : '#a4b0be';
+            
+            html += `<tr style="border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.02);">
+                <td style="padding: 6px; color: #a4b0be; font-weight: 500;">${escHtml(mode.name || `Mode ${idx + 1}`)}</td>
+                <td style="padding: 6px; text-align: center; color: ${viabilityColor}; font-weight: bold;">${viability}</td>
+                <td style="padding: 6px; text-align: center; color: #00d2d3; font-weight: bold;">${escHtml(String(stability))}</td>
+                <td style="padding: 6px; text-align: center; color: ${surrogateColor}; font-weight: bold;">${surrogateHitRate}</td>
+            </tr>`;
+            
+            // Track surrogate stats
+            if (mode.surrogate_evaluations !== undefined && mode.total_evaluations !== undefined) {
+                totalEvals += mode.total_evaluations;
+                totalSurrogateEvals += mode.surrogate_evaluations;
+            }
+        });
+        
+        html += `</tbody></table>`;
+        metaBody.innerHTML = html;
+        
+        // Update surrogate usage card
+        if (surrogatCard && surrogateBody) {
+            if (totalEvals > 0) {
+                surrogatCard.style.display = 'block';
+                const globalRate = ((totalSurrogateEvals / totalEvals) * 100).toFixed(1);
+                let surrogateHtml = `<div style="color: #a4b0be;">`;
+                surrogateHtml += `<div>Total Evaluations Bypassed: <span id="surrogate-total-evals" style="color: #00d2d3; font-weight: bold;">${totalSurrogateEvals.toLocaleString()}</span></div>`;
+                surrogateHtml += `<div>Global Hit Rate: <span id="surrogate-global-rate" style="color: #ff9f43; font-weight: bold;">${globalRate}%</span></div>`;
+                surrogateHtml += `<div style="margin-top: 6px; font-size: 0.75rem; color: #888; line-height: 1.4;">`;
+                surrogateHtml += `Note: Surrogate is disabled during MCMC/evidence phases to prevent bias in posterior estimation.`;
+                surrogateHtml += `</div></div>`;
+                surrogateBody.innerHTML = surrogateHtml;
+            } else {
+                surrogatCard.style.display = 'none';
+            }
+        }
+        
+    } catch (err) {
+        console.error("Error fetching mode metadata:", err);
+        metaCard.style.display = 'none';
+        if (surrogatCard) surrogatCard.style.display = 'none';
+    }
+}
+
 let loginModal = null;
 
 function showLoginModal(onSuccess) {
@@ -5315,14 +6524,17 @@ function showLoginModal(onSuccess) {
         btn.disabled = true;
         fetch(`${API_URL}/api/login`, {
             method: 'POST',
+            credentials: 'include',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({username: u, password: p, remember_me: rem})
         }).then(r => r.json()).then(data => {
             if (data.status === 'success') {
                 loginModal.remove();
                 loginModal = null;
-                if (btnLogout) btnLogout.style.display = 'inline-flex';
-                if (btnManualLogin) btnManualLogin.style.display = 'none';
+                const logoutBtn = document.getElementById('btn-logout');
+                const manualLoginBtn = document.getElementById('btn-manual-login');
+                if (logoutBtn) logoutBtn.style.display = 'inline-flex';
+                if (manualLoginBtn) manualLoginBtn.style.display = 'none';
                 if (typeof onSuccess === 'function') onSuccess();
                 else location.reload();  // safe refresh to pick up cookie for all calls
             } else {

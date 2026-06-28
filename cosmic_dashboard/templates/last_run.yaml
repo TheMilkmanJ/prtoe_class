@@ -12,12 +12,12 @@ likelihood:
   sn.pantheonplusshoes: null
 theory:
   classy:
-    path: /home/themilkmanj/prtoe_class
-    stop_at_error: false
+    # path: Set via Dashboard Engines panel or specify your CLASS build path here
+    stop_at_error: true
     extra_args:
       use_prtoe: 'yes'
       non_linear: halofit
-      base_path: /home/themilkmanj/prtoe_class
+      # base_path: Removed - use path instead
 params:
   omega_b:
     prior:

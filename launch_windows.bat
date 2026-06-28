@@ -29,8 +29,3 @@ echo (or the ones printed by the backend on first start).
 echo.
 echo (To stop: Ctrl+C in this window or close the container.)
 pause
-
-echo Starting backend server (Press Ctrl+C or close this window to stop)...
-docker stop cosmic-backend >nul 2>&1
-docker rm cosmic-backend >nul 2>&1
-docker run --rm --name cosmic-backend -p 8000:8000 -v "%cd%\chains:/app/chains" cosmic-dashboard

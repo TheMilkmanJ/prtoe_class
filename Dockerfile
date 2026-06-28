@@ -6,10 +6,9 @@ ENV PYTHONUNBUFFERED=1
 
 # Build args for runtime env (production best practice)
 ARG DASHBOARD_USER=admin
-ARG DASHBOARD_PASS
 ENV DASHBOARD_USER=${DASHBOARD_USER}
-ENV DASHBOARD_PASS=${DASHBOARD_PASS}
 ENV DASHBOARD_WORKSPACE_ROOT=/app
+# DASHBOARD_PASS should be passed at runtime via -e DASHBOARD_PASS=... to avoid baking secrets into image layers
 
 # Install system dependencies (C/C++ compilers, Fortran, MPI)
 RUN apt-get update && apt-get install -y \

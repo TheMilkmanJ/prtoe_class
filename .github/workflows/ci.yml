@@ -25,9 +25,9 @@ jobs:
     - name: Run tests
       run: |
         cd tests
-        python -m pytest test_dashboard.py -q --tb=short || echo "Some tests may require full env; basic smoke passed"
+        python -m pytest test_dashboard.py -q --tb=short
     - name: Docker build test
       run: |
-        docker build --build-arg DASHBOARD_PASS=test . -t cosmic-test || echo "Docker test (optional)"
+        docker build --build-arg DASHBOARD_USER=admin . -t cosmic-test
 
   # Add more: mypy, full integration with mocks

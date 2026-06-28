@@ -1,10 +1,11 @@
-import os
+import sys
 import re
 import ast
 import glob
 import getdist
 from getdist import plots, mcsamples
 import matplotlib.pyplot as plt
+import os
 
 def find_log_file(prefix):
     # Try direct .log extension
@@ -71,77 +72,82 @@ def extract_chi2_from_log(log_path):
     best_fit = min(chi2_sequences, key=lambda x: x['total'])
     return best_fit, chi2_sequences
 
-# Define paths
-project_dir = os.path.abspath(os.path.dirname(__file__))
-lcdm_prefix = os.path.join(project_dir, "lcdm_poly")
+def main():
+    # Define paths
+    project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    lcdm_prefix = os.path.join(project_dir, "lcdm_poly")
 
-# Fallback to chains/ directory if moved
-if not os.path.exists(lcdm_prefix + ".1.txt") and not os.path.exists(lcdm_prefix + ".txt"):
-    lcdm_prefix = os.path.join(project_dir, "chains", "lcdm_poly")
+    # Fallback to chains/ directory if moved
+    if not os.path.exists(lcdm_prefix + ".1.txt") and not os.path.exists(lcdm_prefix + ".txt"):
+        lcdm_prefix = os.path.join(project_dir, "chains", "lcdm_poly")
 
-prtoe_prefix = os.path.join(project_dir, "chains", "prtoe_poly_optimized")
+    prtoe_prefix = os.path.join(project_dir, "chains", "prtoe_poly_optimized")
 
-# --- Chi2 Extraction and Auditing from Terminal Log Files ---
-print("=" * 80)
-print(" COSMIC MONITOR - CHI2 LOG AUDIT REPORT")
-print("=" * 80)
+    # --- Chi2 Extraction and Auditing from Terminal Log Files ---
+    print("=" * 80)
+    print(" COSMIC MONITOR - CHI2 LOG AUDIT REPORT")
+    print("=" * 80)
 
-for model_name, prefix in [("ΛCDM Baseline", lcdm_prefix), ("PRTOE Optimized", prtoe_prefix)]:
-    log_file = find_log_file(prefix)
-    if not log_file:
-        print(f"[{model_name}] No log file found matching prefix '{prefix}'.")
-        continue
+    for model_name, prefix in [("ΛCDM Baseline", lcdm_prefix), ("PRTOE Optimized", prtoe_prefix)]:
+        log_file = find_log_file(prefix)
+        if not log_file:
+            print(f"[{model_name}] No log file found matching prefix '{prefix}'.")
+            continue
+            
+        print(f"\nSearching log file for {model_name}: {log_file}")
+        best_fit, all_sequences = extract_chi2_from_log(log_file)
         
-    print(f"\nSearching log file for {model_name}: {log_file}")
-    best_fit, all_sequences = extract_chi2_from_log(log_file)
-    
-    if not best_fit:
-        print(f"[{model_name}] No chi2 sequences found in the log.")
-        continue
-        
-    # Print best-fit chi2
-    print(f"[{model_name}] Found {len(all_sequences)} evaluation(s) with chi2 parameters.")
-    print(f"[{model_name}] Best-Fit Chi2 (Total: {best_fit['total']:.4f}):")
-    for k in best_fit['keys']:
-        short_k = k.replace('chi2__', '')
-        print(f"  - {short_k}: {best_fit['dict'][k]:.4f}")
-        
-    # Print all raw sequences (full sequence as singular groups, not mixed)
-    print(f"[{model_name}] Raw Chi2 Sequences (Full Groups):")
-    for idx, seq in enumerate(all_sequences):
-        seq_str = ", ".join([f"{k.replace('chi2__', '')}={v:.4f}" for k, v in seq['dict'].items()])
-        print(f"  Evaluation {idx + 1:3d}: [{seq_str}] (Total={seq['total']:.4f})")
+        if not best_fit:
+            print(f"[{model_name}] No chi2 sequences found in the log.")
+            continue
+            
+        # Print best-fit chi2
+        print(f"[{model_name}] Found {len(all_sequences)} evaluation(s) with chi2 parameters.")
+        print(f"[{model_name}] Best-Fit Chi2 (Total: {best_fit['total']:.4f}):")
+        for k in best_fit['keys']:
+            short_k = k.replace('chi2__', '')
+            print(f"  - {short_k}: {best_fit['dict'][k]:.4f}")
+            
+        # Print all raw sequences (full sequence as singular groups, not mixed)
+        print(f"[{model_name}] Raw Chi2 Sequences (Full Groups):")
+        for idx, seq in enumerate(all_sequences):
+            seq_str = ", ".join([f"{k.replace('chi2__', '')}={v:.4f}" for k, v in seq['dict'].items()])
+            print(f"  Evaluation {idx + 1:3d}: [{seq_str}] (Total={seq['total']:.4f})")
 
-print("=" * 80)
-print()
+    print("=" * 80)
+    print()
 
-# --- Plotting Phase ---
-if not os.path.exists(lcdm_prefix + ".1.txt") and not os.path.exists(lcdm_prefix + ".txt"):
-    print(f"Error: Final chain files not found for prefix '{lcdm_prefix}'.")
-    print("LCDM PolyChord is likely still running! Cobaya only generates the final .txt files once nested sampling has finished.")
-    exit(0)
+    # --- Plotting Phase ---
+    if not os.path.exists(lcdm_prefix + ".1.txt") and not os.path.exists(lcdm_prefix + ".txt"):
+        print(f"Error: Final chain files not found for prefix '{lcdm_prefix}'.")
+        print("LCDM PolyChord is likely still running! Cobaya only generates the final .txt files once nested sampling has finished.")
+        sys.exit(1)
 
-if not os.path.exists(prtoe_prefix + ".1.txt") and not os.path.exists(prtoe_prefix + ".txt"):
-    print(f"Error: Final chain files not found for prefix '{prtoe_prefix}'.")
-    print("PRTOE PolyChord is likely still running! Please wait for both runs to finish before plotting.")
-    exit(0)
+    if not os.path.exists(prtoe_prefix + ".1.txt") and not os.path.exists(prtoe_prefix + ".txt"):
+        print(f"Error: Final chain files not found for prefix '{prtoe_prefix}'.")
+        print("PRTOE PolyChord is likely still running! Please wait for both runs to finish before plotting.")
+        sys.exit(1)
 
-print("Loading chain samples for plotting...")
-# Load the LCDM samples (ignoring the first 30% of the chain as burn-in)
-lcdm_samples = getdist.mcsamples.loadMCSamples(lcdm_prefix, settings={'ignore_rows': 0.3})
+    print("Loading chain samples for plotting...")
+    # Load the LCDM samples (ignoring the first 30% of the chain as burn-in)
+    lcdm_samples = getdist.mcsamples.loadMCSamples(lcdm_prefix, settings={'ignore_rows': 0.3})
 
-# Load the PRTOE samples
-prtoe_samples = getdist.mcsamples.loadMCSamples(prtoe_prefix, settings={'ignore_rows': 0.3})
+    # Load the PRTOE samples
+    prtoe_samples = getdist.mcsamples.loadMCSamples(prtoe_prefix, settings={'ignore_rows': 0.3})
 
-# Parameters we want to visualize
-params = ['omega_b', 'omega_cdm', 'H0', 'n_s', 'z_reio']
+    # Parameters we want to visualize
+    params = ['omega_b', 'omega_cdm', 'H0', 'n_s', 'z_reio']
 
-# Generate the corner plot
-g = plots.get_subplot_plotter()
-g.triangle_plot([lcdm_samples, prtoe_samples], params, filled=True, legend_labels=[r'$\Lambda$CDM Baseline', 'PRTOE Optimized'])
+    # Generate the corner plot
+    g = plots.get_subplot_plotter()
+    g.triangle_plot([lcdm_samples, prtoe_samples], params, filled=True, legend_labels=[r'$\Lambda$CDM Baseline', 'PRTOE Optimized'])
 
-# Save the figure
-output_path = os.path.join(project_dir, "comparison_corner_plot.png")
-plt.savefig(output_path, dpi=300, bbox_inches='tight')
-print(f"Plot successfully saved to {output_path}")
-plt.close('all')
+    # Save the figure
+    output_path = os.path.join(project_dir, "comparison_corner_plot.png")
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    print(f"Plot successfully saved to {output_path}")
+    plt.close('all')
+
+
+if __name__ == "__main__":
+    main()

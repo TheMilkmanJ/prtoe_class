@@ -544,13 +544,16 @@ int background_functions(
     double rho_prtoe = activation * (0.5 * dot_phi * dot_phi) + V_phi;
     double p_prtoe   = activation * (0.5 * dot_phi * dot_phi) - V_phi;
 
-    double rho_phi_fluid = rho_prtoe / 3.0;
-    double p_phi_fluid = p_prtoe / 3.0;
+    // Scalar field energy density and pressure: ρ = ½φ̇² + V, p = ½φ̇² - V
+    // Do NOT divide by 3 - that would make it behave like radiation
+    double rho_phi_fluid = rho_prtoe;
+    double p_phi_fluid = p_prtoe;
 
-    pvecback[pba->index_bg_rho_scf] = rho_phi_fluid;
-    pvecback[pba->index_bg_p_scf] = p_phi_fluid;
+    // Store to PRTOE indices
     pvecback[pba->index_bg_rho_prtoe] = rho_phi_fluid;
     pvecback[pba->index_bg_p_prtoe] = p_phi_fluid;
+    
+    // Also store to dark_energy indices for consistency with CLASS expectations
     pvecback[pba->index_bg_rho_dark_energy] = rho_phi_fluid;
     pvecback[pba->index_bg_p_dark_energy] = p_phi_fluid;
 
@@ -2806,28 +2809,58 @@ int background_derivs(
 
   if (pba->use_prtoe == _TRUE_) {
     double a = exp(loga);
-    
-    /* Smooth Scale-Factor Gate: smoothly activate the field's EoM */
+
+    /* =====================================================================
+       PRTOE-DHOST Framework (aligned with prtoe_dhost_framework.tex)
+       ---------------------------------------------------------------------
+       Action:
+         S = ∫ d⁴x √-g [ (1/(2κ₀))(1 + ξ φ) R
+                         - ½(∇φ)²
+                         - V₀ e^{-λφ}
+                         - ½ m² φ²
+                         + ℒ_Q + ℒ_m ]
+
+       DHOST-Compliant Interaction terms (screened):
+         α², β², δ → α²/(1+φ²), β²/(1+φ²), δ/(1+φ²)
+
+       Scalar EOM (background reduction):
+         The leading curvature coupling gives + (ξ/2) R.
+         Full DHOST operators (R_{μν}∇^μ∇^νφ and matter terms from ℒ_Q)
+         mostly vanish or reduce in homogeneous FLRW background.
+         They are intended primarily for perturbation level.
+       ===================================================================== */
+
+    /* Smooth activation gate (turns on around a ~ 10^{-4}) */
     double activation = 0.5 * (1.0 + tanh(loga + 9.21034037198));
-    
+
     double a2 = a * a;
     double phi = y[pba->index_bi_phi_prtoe];
     double dphi = y[pba->index_bi_dphi_prtoe];
-    
-    /* --- Unified screening function: 1/(1+phi^2) --- */
-    double screening_factor = 1.0 / (1.0 + pba->zeta_prtoe * phi * phi);
-    double xi_screened    = pba->xi_prtoe    * screening_factor * activation;
-    
-    /* --- Potential: V = V0*exp(-lambda*phi) + (1/2)*m^2*phi^2 --- */
-    double m2 = pba->m_prtoe * pba->m_prtoe;
-    double dV_dphi  = -pba->lambda_prtoe * pba->V0_prtoe * exp(-pba->lambda_prtoe * phi) + m2 * phi;
-    
 
-    /* --- Ricci Scalar R --- */
-    pba->R_curvature = 6.0 * (pvecback[pba->index_bg_H_prime] + 2.0 * a * H * H + pba->K / a) / a;
-    double H_conf = H * a;
-    
-    /* --- Equations of motion derivatives --- */
+    /* Screening factor (applied to the triplet) */
+    double screening_factor = 1.0 / (1.0 + pba->zeta_prtoe * phi * phi);
+
+    /* Currently only the ξ R term is active at background level.
+       alpha_prtoe / beta_prtoe / delta_prteo are screened but their
+       full DHOST contributions are not yet reduced here. */
+    double xi_screened = pba->xi_prtoe * screening_factor * activation;
+
+    /* Potential derivative */
+    double m2 = pba->m_prtoe * pba->m_prtoe;
+    double dV_dphi = -pba->lambda_prtoe * pba->V0_prtoe * exp(-pba->lambda_prtoe * phi) + m2 * phi;
+
+    /* Ricci scalar in FLRW background: R = 6 * (dH/dt + 2*H^2 + K/a^2)
+       where dH/dt = H'/a (H' is conformal time derivative of physical Hubble) */
+    pba->R_curvature = 6.0 * (
+        pvecback[pba->index_bg_H_prime] / a
+        + 2.0 * H * H
+        + pba->K / a2
+    );
+
+    /* Klein-Gordon equation in conformal time (background)
+       Variables: dphi = φ' (conformal time derivative), H_conf = a * H (conformal Hubble)
+       Equation: φ'' + 2*H_conf*φ' + a²V' = (ξ/2)R a² */
+    double H_conf = a * H;
     dy[pba->index_bi_phi_prtoe]  = (dphi / a / MAX(H, 1e-20)) * activation;
     dy[pba->index_bi_dphi_prtoe] = (
       - 2.0 * H_conf * dphi

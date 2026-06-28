@@ -6,7 +6,6 @@ services:
       context: .
       args:
         DASHBOARD_USER: ${DASHBOARD_USER:-admin}
-        DASHBOARD_PASS: ${DASHBOARD_PASS}
     ports:
       - "8000:8000"
     volumes:
@@ -18,7 +17,7 @@ services:
       - DASHBOARD_WEBHOOK_URL=${DASHBOARD_WEBHOOK_URL:-}
       # Add others as needed: DASHBOARD_PYTHON etc.
     healthcheck:
-      test: ["CMD", "curl", "-f", "-u", "${DASHBOARD_USER:-admin}:${DASHBOARD_PASS}", "http://localhost:8000/api/health"]
+      test: ["CMD", "sh", "-c", "curl -f -u ${DASHBOARD_USER:-admin}:${DASHBOARD_PASS} http://localhost:8000/api/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

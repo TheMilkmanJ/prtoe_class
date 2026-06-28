@@ -1,0 +1,172 @@
+# lcdm_comparison.yaml
+# Fair LCDM baseline for comparison against prtoe_standard.yaml
+#
+# FIXES vs lcdm_baseline_fresh.yaml (the bad run):
+#   1. nlive: 500 (was 200) — minimum for 7 sampled params, matches publication standard
+#   2. num_repeats: 30 (was 5) — was causing terrible mixing; A_planck drifted to 0.26
+#   3. m_ncdm: FIXED at 0.06 eV (was a free parameter) — must match PRTOE config exactly
+#   4. New output prefix chains/lcdm_comparison — no resume from corrupted old run
+#   5. Identical likelihoods to prtoe_standard.yaml: Planck+BAO+SN
+#   6. Identical CLASS settings to prtoe_standard.yaml (non_linear, N_ur, N_ncdm, T_ncdm)
+#   7. Priors tightened to match prtoe_standard.yaml (omega_b, omega_cdm, H0, n_s, z_reio)
+#   8. Added S8, sigma8 derived params for tension analysis
+
+output: chains/lcdm_comparison
+packages_path: /home/themilkmanj/cobaya_packages_clean
+debug: false
+
+theory:
+  classy:
+    path: /home/themilkmanj/prtoe_class
+    stop_at_error: false
+    extra_args:
+      use_prtoe: 'no'         # LCDM — PRTOE physics disabled
+      non_linear: halofit     # same as PRTOE run
+      output: 'mPk,tCl,pCl,lCl'
+      modes: s
+      N_ur: 2.0328            # same neutrino sector as PRTOE
+      N_ncdm: 1
+      T_ncdm: 0.71611
+      base_path: /home/themilkmanj/prtoe_class
+      l_max_scalars: 2508
+      lensing: 'yes'
+      z_pk: '0.61 0.51 0.38'
+      P_k_max_1/Mpc: 1
+
+# Identical likelihood suite to prtoe_standard.yaml
+likelihood:
+  planck_2018_lowl.TT: null
+  planck_2018_lowl.EE: null
+  planck_2018_highl_plik.TTTEEE_lite: null
+  planck_2018_lensing.clik: null
+  bao.sixdf_2011_bao: null
+  bao.sdss_dr7_mgs: null
+  bao.sdss_dr12_consensus_final: null
+  bao.desi_2024_bao_all: null
+  sn.pantheonplusshoes: null
+
+params:
+  # --- Sampled parameters (identical priors to prtoe_standard.yaml) ---
+  omega_b:
+    prior:
+      min: 0.019
+      max: 0.026
+    ref: 0.0224
+    proposal: 0.0001
+    latex: \Omega_\mathrm{b} h^2
+
+  omega_cdm:
+    prior:
+      min: 0.10
+      max: 0.14
+    ref: 0.12
+    proposal: 0.001
+    latex: \Omega_\mathrm{c} h^2
+
+  H0:
+    prior:
+      min: 60.0
+      max: 80.0
+    ref: 67.4
+    proposal: 0.5
+    latex: H_0
+
+  logA:
+    prior:
+      min: 2.9
+      max: 3.25
+    ref: 3.05
+    proposal: 0.005
+    latex: \ln(10^{10} A_\mathrm{s})
+    drop: true
+
+  A_s:
+    value: 'lambda logA: 1e-10 * np.exp(logA)'
+    latex: A_\mathrm{s}
+
+  n_s:
+    prior:
+      min: 0.9
+      max: 1.05
+    ref: 0.965
+    proposal: 0.004
+    latex: n_\mathrm{s}
+
+  z_reio:
+    prior:
+      min: 5.0
+      max: 12.0
+    ref: 8.0
+    proposal: 0.1
+    latex: z_\mathrm{reio}
+
+  # FIX: m_ncdm FIXED at 0.06 eV — NOT a free parameter.
+  # The old run had this free which inflated chi2 and mismatched PRTOE.
+  m_ncdm:
+    value: 0.06
+    latex: \sum m_\nu \ [\mathrm{eV}]
+
+  # A_planck nuisance — Gaussian prior as required by Planck likelihood
+  A_planck:
+    prior:
+      dist: norm
+      loc: 1.0
+      scale: 0.0025
+    ref: 1.0
+    proposal: 0.0002
+    latex: A_\mathrm{planck}
+    renames: calPlanck
+
+  # --- Derived parameters ---
+  sigma8:
+    latex: \sigma_8
+
+  Omega_m:
+    latex: \Omega_\mathrm{m}
+
+  S8:
+    derived: 'lambda sigma8, Omega_m: sigma8 * (Omega_m / 0.3)**0.5'
+    latex: S_8
+
+  chi2__BAO:
+    latex: \chi^2_\mathrm{BAO}
+  chi2__CMB:
+    latex: \chi^2_\mathrm{CMB}
+  chi2__SN:
+    latex: \chi^2_\mathrm{SN}
+
+sampler:
+  polychord:
+    # FIX: nlive=500 (was 200). Rule of thumb: >=25*n_params = 25*7 = 175 min.
+    # 500 gives good resolution and matches publication-grade LCDM runs.
+    nlive: 500
+
+    # FIX: num_repeats=30 (was 5). This was THE root cause of the bad run.
+    # With num_repeats=5, the slice sampler barely mixes — A_planck drifted to 0.26.
+    # Standard value for Planck-scale CMB runs is 30-50.
+    num_repeats: 30
+
+    do_clustering: true
+    precision_criterion: 0.01
+    fast_fraction: 0.0
+    boost_posterior: 0.0
+    compression_factor: 0.36787944117144233
+    feedback: 1
+    synchronous: true
+    oversample_power: 0.4
+
+    # Speed blocking: fast A_planck, slow CMB params
+    blocking:
+      - [1, [omega_b, omega_cdm, H0, logA, n_s, z_reio]]
+      - [30, [A_planck]]
+
+    write_resume: true
+    read_resume: false   # DO NOT resume from the bad old run
+    write_stats: true
+    write_live: true
+    write_dead: true
+    write_prior: true
+    posteriors: true
+    equals: true
+    cluster_posteriors: true
+    seed: 42             # reproducible

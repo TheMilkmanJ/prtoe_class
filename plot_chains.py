@@ -127,9 +127,178 @@ def get_output_prefix_from_yaml(config_path):
     # Fallback if not found
     return os.path.join("chains", "prtoe_polychord")
 
+def plot_optimizer_progress(output_prefix, config_path):
+    import matplotlib.pyplot as plt
+    plt.style.use('dark_background')
+    
+    log_path = f"{output_prefix}.log"
+    comp_file = f"{output_prefix}_modes_comparison.txt"
+    
+    # 1. Try to load comparison file if completed
+    if os.path.exists(comp_file):
+        try:
+            content = ""
+            with open(comp_file, "r") as f:
+                content = f.read()
+            modes = []
+            parts = content.split("Mode: ")
+            for part in parts[1:]:
+                lines = part.strip().split("\n")
+                if not lines:
+                    continue
+                name = lines[0].strip()
+                chi2 = None
+                h0 = None
+                v0 = None
+                for line in lines:
+                    if "Total Chi2:" in line:
+                        chi2 = float(line.split("Total Chi2:")[1].strip())
+                    elif "Raw Data Chi2:" in line:
+                        chi2 = float(line.split("Raw Data Chi2:")[1].strip())
+                    if "H0" in line and ":" in line:
+                        h0 = float(line.split(":")[1].strip().split()[0])
+                    if "V0_prtoe" in line and ":" in line:
+                        v0 = float(line.split(":")[1].strip().split()[0])
+                if chi2 is not None:
+                    modes.append({"name": name, "chi2": chi2, "H0": h0, "V0_prtoe": v0})
+            
+            # Filter out failed/unphysical modes (chi2 >= 1e5) to avoid distorting the plot scale
+            valid_modes = [m for m in modes if m["chi2"] < 1e5]
+            if valid_modes:
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 5))
+                names = [m["name"].replace("-preferred", "") for m in valid_modes]
+                chi2s = [m["chi2"] for m in valid_modes]
+                h0_modes = [m for m in valid_modes if m["H0"] is not None]
+                h0_names = [m["name"].replace("-preferred", "") for m in h0_modes]
+                h0s = [m["H0"] for m in h0_modes]
+                
+                # Colors
+                colors = ["#10ac84", "#00d2d3", "#ff9f43", "#5f27cd"][:len(names)]
+                
+                # Plot 1: Chi2 Comparison
+                bars = ax1.bar(names, chi2s, color=colors, alpha=0.8, edgecolor='white', width=0.5)
+                ax1.set_title(r"Total $\chi^2$ comparison (lower is better)", fontsize=11, color="#00d2d3")
+                ax1.set_ylabel(r"$\chi^2$", fontsize=10)
+                ax1.grid(axis='y', linestyle='--', alpha=0.2)
+                for bar in bars:
+                    yval = bar.get_height()
+                    ax1.text(bar.get_x() + bar.get_width()/2, yval + max(1, yval*0.01), f"{yval:.2f}", ha='center', va='bottom', fontsize=9)
+                
+                # Plot 2: H0 Values
+                if len(h0_modes) == len(valid_modes):
+                    bars2 = ax2.bar(h0_names, h0s, color=colors[:len(h0_names)], alpha=0.8, edgecolor='white', width=0.5)
+                    ax2.set_title("$H_0$ values across modes", fontsize=11, color="#ff9f43")
+                    ax2.set_ylabel("$H_0$ [km/s/Mpc]", fontsize=10)
+                    ax2.set_ylim(min(h0s) - 2, max(h0s) + 2)
+                    ax2.grid(axis='y', linestyle='--', alpha=0.2)
+                    for bar in bars2:
+                        yval = bar.get_height()
+                        ax2.text(bar.get_x() + bar.get_width()/2, yval + 0.1, f"{yval:.2f}", ha='center', va='bottom', fontsize=9)
+                
+                plt.tight_layout()
+                plt.savefig("prtoe_posteriors.png", dpi=150)
+                plt.close('all')
+                print("[monitor] Multimodal comparison plot successfully saved to prtoe_posteriors.png")
+                return True
+        except Exception as e:
+            print(f"[monitor] Error plotting multimodal comparison: {e}")
+            
+    # 2. Convergence plot (in-progress)
+    if os.path.exists(log_path):
+        try:
+            import re
+            import ast
+            eval_idx = 0
+            evals = []
+            chi2_vals = []
+            
+            pattern = re.compile(r"Computed derived parameters:\s*(\{.*\})")
+            
+            with open(log_path, "r") as f:
+                for line in f:
+                    match = pattern.search(line)
+                    if match:
+                        try:
+                            s_val = match.group(1)
+                            
+                            # Read dict
+                            d = ast.literal_eval(s_val)
+                            # Calculate total chi2 using the same robust logic as the backend
+                            chi2_keys = [k for k in d.keys() if k.startswith('chi2__')]
+                            tot = 0.0
+                            if chi2_keys:
+                                cmb_vals = [d[k] for k in chi2_keys if 'cmb' in k.lower() or 'planck' in k.lower()]
+                                bao_vals = [d[k] for k in chi2_keys if 'bao' in k.lower()]
+                                sn_vals = [d[k] for k in chi2_keys if 'sn' in k.lower() or 'pantheon' in k.lower() or 'shoes' in k.lower()]
+                                
+                                # Skip records with non-finite chi² values
+                                if any(not np.isfinite(v) for v in cmb_vals + bao_vals + sn_vals):
+                                    continue
+                                
+                                cmb_sum = sum(cmb_vals) if cmb_vals else 0.0
+                                bao_sum = sum(bao_vals) if bao_vals else 0.0
+                                sn_sum = sum(sn_vals) if sn_vals else 0.0
+                                
+                                chi2_bao = d.get('chi2__BAO', bao_sum)
+                                chi2_cmb = d.get('chi2__CMB', cmb_sum)
+                                chi2_sn = d.get('chi2__SN', sn_sum)
+                                
+                                tot = (chi2_bao or 0.0) + (chi2_cmb or 0.0) + (chi2_sn or 0.0)
+                                if tot == 0.0:
+                                    tot = sum([d[k] for k in chi2_keys])
+                                else:
+                                    grouped_keys = {k for k in chi2_keys if any(g in k.lower() for g in ['cmb', 'planck', 'bao', 'boss', 'sn', 'pantheon', 'shoes'])}
+                                    ungrouped_vals = [d[k] for k in chi2_keys if k not in grouped_keys]
+                                    tot += sum(ungrouped_vals)
+                            
+                            eval_idx += 1
+                            if 0 < tot < 1e5:
+                                evals.append(eval_idx)
+                                chi2_vals.append(tot)
+                        except Exception:
+                            continue
+            
+            if chi2_vals:
+                fig, ax = plt.subplots(figsize=(8, 4))
+                ax.plot(evals, chi2_vals, color="#00d2d3", label=r"$\chi^2$ evaluated points", alpha=0.5, marker='o', markersize=2)
+                
+                # Plot running minimum
+                running_min = []
+                curr_min = float('inf')
+                for v in chi2_vals:
+                    if v < curr_min:
+                        curr_min = v
+                    running_min.append(curr_min)
+                ax.plot(evals, running_min, color="#ff9f43", linewidth=2.5, label=r"Best $\chi^2$ found")
+                
+                ax.set_title("Cosmo Optimizer Convergence Progress", fontsize=12, color="#00d2d3")
+                ax.set_xlabel("Evaluation Number", fontsize=10)
+                ax.set_ylabel(r"Total $\chi^2$", fontsize=10)
+                ax.grid(True, linestyle='--', alpha=0.2)
+                ax.legend(loc="upper right")
+                
+                # set log scale if dynamic range is huge
+                if max(chi2_vals) / (min(chi2_vals) + 1e-5) > 10.0:
+                    ax.set_yscale('log')
+                
+                plt.tight_layout()
+                plt.savefig("prtoe_posteriors.png", dpi=150)
+                plt.close('all')
+                print(f"[monitor] Convergence plot successfully saved to prtoe_posteriors.png (evaluations: {eval_idx})")
+                return True
+        except Exception as e:
+            print(f"[monitor] Error plotting convergence trace: {e}")
+            
+    return False
+
 def main(args, first_run=False):
     # Dynamically determine the output prefix from the active YAML
     output_prefix = get_output_prefix_from_yaml(args.config)
+    
+    if getattr(args, 'optimizer', False):
+        if not plot_optimizer_progress(output_prefix, args.config):
+            sys.exit(1)
+        return
 
     if first_run:
         prefix_path = os.path.basename(output_prefix)
@@ -444,35 +613,63 @@ def main(args, first_run=False):
         # --------------------------
 
         if args.monitor_and_stop and has_warnings:
-            warning_msg = (
-                "\n" + "!"*85 + "\n"
-                "! WATCHDOG ALERT: Good-fit samples are piling up against prior boundaries.\n"
-                "! Recommendations have been sent to the CosmicDashboard for your review.\n"
-                + "!"*85 + "\n"
-            )
-            print(warning_msg, end="")
+            # Query backend to check if automated watchdog actions are enabled
+            auto_apply = False
             try:
-                with open(f"{output_prefix}.log", "a") as lf:
-                    lf.write(warning_msg)
-            except Exception:
-                pass
-            
-            dash_msg = "Prior hit! Auto-updating YAML and restarting. Issues: " + ", ".join(dash_warnings)
-            send_dashboard_log(dash_msg)
-            
-            update_yaml_priors(proposed_new_bounds, args.config)
-            
-            print("\nTriggering Dashboard Backend to handle clean restart sequence...")
-            try:
-                # Use a short timeout because the backend will kill this script during the stop phase
-                requests.post('http://localhost:8000/api/watchdog_restart', json={"config_name": args.config}, timeout=2)
-            except requests.exceptions.Timeout:
-                pass
+                r = requests.get('http://localhost:8000/api/status', timeout=5)
+                if r.status_code == 200:
+                    auto_apply = r.json().get("auto_apply_watchdog", True)
             except Exception as e:
-                print(f"Failed to trigger watchdog restart: {e}")
+                print(f"[MONITOR] Warning checking watchdog settings: {e}")
+
+            if auto_apply:
+                warning_msg = (
+                    "\n" + "!"*85 + "\n"
+                    "! WATCHDOG ALERT: Good-fit samples are piling up against prior boundaries.\n"
+                    "! Automatically applying recommendations and restarting sampler.\n"
+                    + "!"*85 + "\n"
+                )
+                print(warning_msg, end="")
+                try:
+                    with open(f"{output_prefix}.log", "a") as lf:
+                        lf.write(warning_msg)
+                except Exception:
+                    pass
                 
-            import sys
-            sys.exit(0) # Exit the script immediately
+                dash_msg = "Prior hit! Auto-updating YAML and restarting. Issues: " + ", ".join(dash_warnings)
+                send_dashboard_log(dash_msg)
+                
+                update_yaml_priors(proposed_new_bounds, args.config)
+                
+                print("\nTriggering Dashboard Backend to handle clean restart sequence...")
+                restart_handed_off = False
+                try:
+                    # Use a short timeout because the backend will kill this script during the stop phase
+                    resp = requests.post(
+                        'http://localhost:8000/api/watchdog_restart',
+                        json={"config_name": args.config},
+                        timeout=2,
+                    )
+                    resp.raise_for_status()
+                    restart_handed_off = True
+                except requests.exceptions.Timeout:
+                    restart_handed_off = True
+                except Exception as e:
+                    print(f"Failed to trigger watchdog restart: {e}")
+                
+                if restart_handed_off:
+                    import sys
+                    sys.exit(0)
+            else:
+                warning_msg = (
+                    "\n" + "!"*85 + "\n"
+                    "! WATCHDOG ALERT: Prior boundary hit detected!\n"
+                    "! Automated actions disabled by user. Review alerts and use recovery tools to widen manually.\n"
+                    + "!"*85 + "\n"
+                )
+                print(warning_msg, end="")
+                dash_msg = "[ALERT] Prior boundary hit detected! (Automated actions disabled). Issues: " + ", ".join(dash_warnings)
+                send_dashboard_log(dash_msg)
 
         # 3. Create the GetDist MCSamples object directly in memory
         # We override weights to 1.0 because N_eff is too low for KDE contours right now.
@@ -546,6 +743,7 @@ if __name__ == "__main__":
     parser.add_argument('--config', type=str, default='uploaded_config.yaml', help='The YAML configuration file to monitor.')
     parser.add_argument('--monitor-and-stop', action='store_true', help='Run in a loop to monitor prior boundaries and auto-stop the run if they are hit.')
     parser.add_argument('--interval', type=int, default=300, help='Check interval in seconds for monitoring mode (default: 300s / 5min).')
+    parser.add_argument('--optimizer', action='store_true', help='Set if monitoring a Cosmo Optimizer run.')
     
     args = parser.parse_args()
 

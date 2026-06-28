@@ -1,5 +1,6 @@
 import os
 import shutil
+import tempfile
 import getdist
 from getdist import plots, MCSamples
 import matplotlib.pyplot as plt
@@ -64,8 +65,15 @@ def update_yaml_priors(proposed_new_bounds, config_path):
                         if isinstance(params[name]['proposal'], (int, float)):
                             params[name]['proposal'] = float((new_max - new_min) / 20.0)
                             
-        with open(config_path, 'w') as f:
-            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        config_dir = os.path.dirname(os.path.abspath(config_path)) or "."
+        fd, tmp_path = tempfile.mkstemp(prefix=".priors.", suffix=".yaml", dir=config_dir)
+        try:
+            with os.fdopen(fd, "w") as f:
+                yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+            os.replace(tmp_path, config_path)
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
         print(f"Successfully auto-updated YAML priors in {config_path}")
     except Exception as e:
         print(f"Error auto-updating YAML priors: {e}")
@@ -148,14 +156,35 @@ def main(args, first_run=False):
     data_parts = []
     is_initialization = False
     
+    def load_lines_safely(lines, is_raw_file=False):
+        """Load lines safely, only dropping incomplete last line for raw files."""
+        if not lines:
+            return None
+        # For raw files, check if last line is incomplete
+        if is_raw_file:
+            try:
+                # Try loading all lines first
+                d = np.loadtxt(lines)
+                return np.atleast_2d(d) if d.size > 0 else None
+            except ValueError:
+                # If loading fails, try dropping the last line (may be incomplete)
+                if len(lines) > 1:
+                    d = np.loadtxt(lines[:-1])
+                    return np.atleast_2d(d) if d.size > 0 else None
+                return None
+        else:
+            # For completed files, load all lines
+            d = np.loadtxt(lines)
+            return np.atleast_2d(d) if d.size > 0 else None
+    
     # Check for completed chains first
     if os.path.exists(root_finished + ".txt") and os.path.getsize(root_finished + ".txt") > 0:
         root_name = root_finished
         with open(root_name + ".txt", "r") as f:
             lines = f.readlines()
-        if len(lines) > 1:
-            d = np.loadtxt(lines[:-1])
-            if d.size > 0: data_parts.append(np.atleast_2d(d))
+        d = load_lines_safely(lines, is_raw_file=False)
+        if d is not None:
+            data_parts.append(d)
     else:
         # If not finished, read the raw dead points AND live points from PolyChord
         raw_dead = root_raw + ".txt"
@@ -164,25 +193,24 @@ def main(args, first_run=False):
         if os.path.exists(raw_dead) and os.path.getsize(raw_dead) > 0:
             with open(raw_dead, "r") as f:
                 lines = f.readlines()
-            if len(lines) > 1:
-                d = np.loadtxt(lines[:-1])
-                if d.size > 0: data_parts.append(np.atleast_2d(d))
+            d = load_lines_safely(lines, is_raw_file=True)
+            if d is not None:
+                data_parts.append(d)
                 
         # Only use live points if dead points are not yet populated (Initialization Phase)
         if not data_parts and os.path.exists(raw_live) and os.path.getsize(raw_live) > 0:
             is_initialization = True
             with open(raw_live, "r") as f:
                 lines = f.readlines()
-            if len(lines) > 1:
-                d = np.loadtxt(lines[:-1])
-                if d.size > 0:
-                    d = np.atleast_2d(d)
-                    # phys_live format is [p1..pN, logL]. Mock it to [weight, -2logL, p1..pN]
-                    weights = np.ones((d.shape[0], 1))
-                    logL = -2.0 * d[:, -1:]  # -2 logL to match PolyChord's raw chain Col 1 format!
-                    params = d[:, :-1]
-                    d_mock = np.hstack((weights, logL, params))
-                    data_parts.append(d_mock)
+            d = load_lines_safely(lines, is_raw_file=True)
+            if d is not None:
+                d = np.atleast_2d(d)
+                # phys_live format is [p1..pN, logL]. Mock it to [weight, -2logL, p1..pN]
+                weights = np.ones((d.shape[0], 1))
+                logL = -2.0 * d[:, -1:]  # -2 logL to match PolyChord's raw chain Col 1 format!
+                params = d[:, :-1]
+                d_mock = np.hstack((weights, logL, params))
+                data_parts.append(d_mock)
                 
         root_name = root_raw
         
@@ -198,12 +226,24 @@ def main(args, first_run=False):
     try:
         data = data_parts[0]
         
-        # PolyChord format: Col 0 = weight, Col 1 = -2 log(Likelihood), Col 2+ = Parameters
-        weights = data[:, 0]
-        loglikes = data[:, 1]
-        samps = data[:, 2:]
-        
         is_raw = is_initialization or not (os.path.exists(root_finished + ".txt") and os.path.getsize(root_finished + ".txt") > 0)
+        
+        # PolyChord format: Col 0 = weight, Col 1 = -2 log(Likelihood), Col 2+ = Parameters
+        # Raw: [weight, -2logL, params..., logprior, loglikes...]
+        # Final: [weight, -2logpost, logprior, params...]
+        weights = data[:, 0]
+        
+        if is_raw:
+            # Raw chains: column 1 is -2logL directly
+            loglikes = data[:, 1]
+        else:
+            # Final chains: column 1 is -2logpost, column 2 is logprior
+            # Reconstruct chi2 = -2logpost - 2*logprior
+            logpost = data[:, 1]
+            logprior = data[:, 2]
+            loglikes = logpost - 2.0 * logprior
+        
+        samps = data[:, 2:] if is_raw else data[:, 3:]
         
         # 2. Dynamically load parameter names from the .paramnames file
         names = []
@@ -407,6 +447,7 @@ def main(args, first_run=False):
                             status = "INFO: Prior too wide"
                             new_min_tight = max(p_min, s_min - 0.2 * sample_range)
                             new_max_tight = min(p_max, s_max + 0.2 * sample_range)
+                            new_min, new_max = new_min_tight, new_max_tight
                             suggestion_list.append(f"tighten -> [{new_min_tight:.4g}, {new_max_tight:.4g}]")
                         else:
                             status = "OK"
@@ -429,16 +470,18 @@ def main(args, first_run=False):
         audit_output = "\n".join(audit_lines)
         print(audit_output)
         try:
-            # Safely clear the terminal log so the UI doesn't lag from thousands of lines of output
-            open(f"{output_prefix}.log", "w").close()
-            with open(f"{output_prefix}.log", "a") as lf:
+            # Write to a separate monitor log to avoid truncating the main run log
+            monitor_log = f"{output_prefix}_monitor.log"
+            with open(monitor_log, "w") as lf:
                 lf.write(audit_output + "\n")
-        except Exception:
-            pass
+        except IOError as e:
+            print(f"[ERROR] Failed to write monitor log: {e}")
+        except Exception as e:
+            print(f"[ERROR] Unexpected error writing monitor log: {e}")
 
         # Send structured payload to the Dashboard Watchdog API
         try:
-            requests.post('http://localhost:8000/api/watchdog', json={"alerts": dash_alerts})
+            requests.post('http://localhost:8000/api/watchdog', json={"alerts": dash_alerts}, timeout=5)
         except Exception:
             pass
         # --------------------------
@@ -519,7 +562,10 @@ def main(args, first_run=False):
                 f.write(f" BEST-FIT POINT (Total chi2 = {best_chi2:.4f})\n")
                 f.write("-" * 60 + "\n")
                 for i, name in enumerate(names):
-                    f.write(f"{name:<20} : {samps[best_idx, i]:.6g}\n")
+                    if use_log_params and name in log_best_params:
+                        f.write(f"{name:<20} : {log_best_params[name]:.6g}\n")
+                    else:
+                        f.write(f"{name:<20} : {samps[best_idx, i]:.6g}\n")
                 f.write("\n")
                 
                 f.write("-" * 60 + "\n")

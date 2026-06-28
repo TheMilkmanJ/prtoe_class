@@ -3,7 +3,7 @@
 CosmicExplorer — Fast CLI for CLASS / Cobaya / PolyChord
 """
 
-import sys, os, subprocess, json, re, shutil, textwrap
+import sys, os, subprocess, json, re, shutil, textwrap, ast
 from datetime import datetime
 from pathlib import Path
 
@@ -23,7 +23,7 @@ PROJ = Path("/home/themilkmanj/prtoe_class")
 
 SYSTEM = (
     "You are CosmicExplorer — an elite CLI assistant for CLASS, Cobaya, PolyChord, and CosmicDashboard "
-    "at /home/themilkmanj/prtoe_class.\n\n"
+    f"at {PROJ}.\n\n"
     "== COMPONENT INTERFACES ==\n\n"
     "1. CLASS (C library) ↔ Cobaya (via classy Python Cython module):\n"
     "   - Cobaya YAML theory.classy.path → project root (contains libclass.a, python/classy.pyx)\n"
@@ -185,6 +185,8 @@ def get_sampled_params(config_path: Path) -> list[dict]:
     params = cfg.get("params", {})
     ordered = []
     for name, p in params.items():
+        if not isinstance(p, dict):
+            continue
         if "prior" in p or "ref" in p:
             ordered.append({
                 "name": name,
@@ -203,6 +205,9 @@ def get_all_params(config_path: Path) -> tuple[list[dict], list[dict]]:
     params = cfg.get("params", {})
     sampled, derived = [], []
     for name, p in params.items():
+        if not isinstance(p, dict):
+            derived.append({"name": name, "latex": name, "type": "fixed", "value": str(p)[:60]})
+            continue
         entry = {"name": name, "latex": p.get("latex", name)}
         if "prior" in p:
             entry["type"] = "sampled"
@@ -566,8 +571,12 @@ def cmd_ls(args: str):
 def cmd_plot(args: str):
     if args in ("posterior", "posteriors", ""):
         script = PROJ / "plot_posteriors.py"
+        if not script.exists():
+            script = PROJ / "cosmic_dashboard" / "utils" / "plot_posteriors.py"
     elif args in ("chain", "chains"):
         script = PROJ / "plot_chains.py"
+        if not script.exists():
+            script = PROJ / "cosmic_dashboard" / "utils" / "plot_chains.py"
     else:
         script = PROJ / args
         if not script.exists():
@@ -810,17 +819,22 @@ def cmd_bestfit(args: str):
         for m in re.finditer(r"Computed derived parameters:\s*({.*?})", log_text, re.DOTALL):
             try:
                 derived_dict = json.loads(m.group(1))
-                t2 = Table(title="Derived parameters (from log)", box=box.SIMPLE)
-                t2.add_column("Parameter", style="cyan")
-                t2.add_column("Value", justify="right")
-                for k, v in derived_dict.items():
-                    if isinstance(v, (int, float)):
-                        t2.add_row(k, f"{v:.4g}")
-                if t2.row_count:
-                    console.print(t2)
-                break
             except (json.JSONDecodeError, ValueError):
-                continue
+                try:
+                    derived_dict = ast.literal_eval(m.group(1))
+                except (ValueError, SyntaxError):
+                    continue
+            
+            # Render table for both JSON and literal_eval successful parses
+            t2 = Table(title="Derived parameters (from log)", box=box.SIMPLE)
+            t2.add_column("Parameter", style="cyan")
+            t2.add_column("Value", justify="right")
+            for k, v in derived_dict.items():
+                if isinstance(v, (int, float)):
+                    t2.add_row(k, f"{v:.4g}")
+            if t2.row_count:
+                console.print(t2)
+            break
 
     # Convergence note
     console.print(f"[dim]Source: {rel(candidates[0])} ({len(txt)} points)[/dim]")
@@ -977,7 +991,12 @@ def cmd_watch(args: str):
                     logz_err = sdata["logZ_err"]
 
             ndead_str = f"[green]{ndead}[/green]" if ndead else "[yellow]?[/yellow]"
-            logz_str = f"[green]{logz:.2f} ± {logz_err:.2f}[/green]" if logz else "[yellow]?[/yellow]"
+            if logz is None:
+                logz_str = "[yellow]?[/yellow]"
+            elif logz_err is None:
+                logz_str = f"[green]{logz:.2f} ± ?[/green]"
+            else:
+                logz_str = f"[green]{logz:.2f} ± {logz_err:.2f}[/green]"
 
             console.print(f"  ndead={ndead_str}  log(Z)={logz_str}  "
                           f"[dim]({datetime.now().strftime('%H:%M:%S')})[/dim]",

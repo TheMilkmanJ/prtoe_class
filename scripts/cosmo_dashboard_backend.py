@@ -26,11 +26,27 @@ import glob
 import sqlite3
 import collections
 from functools import lru_cache
+import threading
 
 # Ensure parsers package is importable when running backend.py directly
 import sys
 from pathlib import Path as _Path
-sys.path.insert(0, str(_Path(__file__).resolve().parent))
+sys.path.insert(0, str(_Path(__file__).resolve().parent.parent.parent))  # Add /home/themilkmanj
+sys.path.insert(0, str(_Path(__file__).resolve().parent))  # Also add scripts/ for compatibility
+# Import parser adapters for run summary and stats parsing
+try:
+    from prtoe_class.backend.parsers_adapter import parse_polychord_stats, get_best_fit_details, get_output_prefix_from_yaml, get_model_yaml_path
+except Exception:
+    # Fallback shims
+    def parse_polychord_stats(*args, **kwargs):
+        return {}
+    def get_best_fit_details(*args, **kwargs):
+        return None
+    def get_output_prefix_from_yaml(path):
+        return None
+    def get_model_yaml_path(output_prefix, active_yaml_path=None):
+        return None
+
 
 ERROR_LOG_PATH = Path("chains/dashboard_errors.log")
 
@@ -217,16 +233,20 @@ def resolve_cobaya_runtime(engine: Optional[dict] = None) -> tuple:
     python_exe = os.environ.get("DASHBOARD_PYTHON") or engine.get("python_exe")
 
     if not python_exe:
-        pgtoe_py = os.path.join(DEFAULT_CONDA_ROOT, "envs", DEFAULT_COBAYA_ENV, "bin", "python3")
-        if os.path.isfile(pgtoe_py):
-            python_exe = pgtoe_py
-        else:
+        # Search candidate envs in order
+        for env_name in ["pgtoe_gold", "cobaya_prod", "pgtoe_plat", "prtoe_gold"]:
+            pgtoe_py = os.path.join(DEFAULT_CONDA_ROOT, "envs", env_name, "bin", "python3")
+            if os.path.isfile(pgtoe_py):
+                python_exe = pgtoe_py
+                break
+        if not python_exe:
             conda_prefix_env = os.environ.get("CONDA_PREFIX", "")
             if conda_prefix_env:
                 cand = os.path.join(conda_prefix_env, "bin", "python3")
                 python_exe = cand if os.path.isfile(cand) else (shutil.which("python3") or "python3")
             else:
                 python_exe = shutil.which("python3") or "python3"
+
 
     # Infer the correct conda prefix from the actual python we'll run
     conda_prefix = _conda_prefix_from_python(python_exe) or os.environ.get("CONDA_PREFIX", "")
@@ -452,13 +472,44 @@ _shutdown_force_timer = None
 def anakin_skywalker_directive():
     """Hunt down and kill orphan processes that are eating CPU resources.
     Themed after Order 66 - Anakin clears the temple of younglings (orphan processes).
+    
+    Now scoped to dashboard-owned processes only to avoid killing unrelated user jobs.
     """
     import subprocess
 
     killed_count = 0
     killed_processes = []
 
-    # Define orphan patterns to hunt
+    # Get dashboard-owned process PIDs to scope cleanup
+    # Track root PIDs separately to avoid killing the live tracked run
+    root_pids = set()
+    dashboard_pids = set()
+    
+    if state.running_process and state.running_process.poll() is None:
+        root_pids.add(state.running_process.pid)
+        # Add children of running process to candidate list
+        try:
+            parent = psutil.Process(state.running_process.pid)
+            for child in parent.children(recursive=True):
+                dashboard_pids.add(child.pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    
+    if state.monitor_process and state.monitor_process.poll() is None:
+        root_pids.add(state.monitor_process.pid)
+        # Add children of monitor process to candidate list
+        try:
+            parent = psutil.Process(state.monitor_process.pid)
+            for child in parent.children(recursive=True):
+                dashboard_pids.add(child.pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+    # If no dashboard processes running, nothing to clean
+    if not dashboard_pids:
+        return 0
+
+    # Define orphan patterns to hunt (only within dashboard-owned processes)
     orphan_patterns = [
         'plot_chains.py',
         'mpirun.*defunct',
@@ -491,6 +542,10 @@ def anakin_skywalker_directive():
 
             # Only hunt processes owned by current user
             if user != current_user:
+                continue
+
+            # Only hunt dashboard-owned processes
+            if int(pid) not in dashboard_pids:
                 continue
 
             # Check if it matches orphan patterns
@@ -762,8 +817,20 @@ async def sanitize_paths_middleware(request: Request, call_next):
 @app.middleware("http")
 async def dashboard_auth_middleware(request: Request, call_next):
     path = request.url.path
-    public = ("/api/login", "/api/logout", "/api/health", "/api/uptime", "/api/sysinfo", "/api/metrics", "/api/supported_models", "/api/validate_config", "/api/class_engines", "/api/derived_parameters")
-    if path.startswith("/api/") and not any(path.startswith(p) for p in public):
+    # Use exact (method, path) matching to avoid prefix-matching security issues
+    public = {
+        ("POST", "/api/login"),
+        ("POST", "/api/logout"),
+        ("GET", "/api/health"),
+        ("GET", "/api/uptime"),
+        ("GET", "/api/sysinfo"),
+        ("GET", "/api/metrics"),
+        ("GET", "/api/supported_models"),
+        ("POST", "/api/validate_config"),
+        ("GET", "/api/class_engines"),  # Only GET for listing engines, not POST for select/remove
+        ("GET", "/api/derived_parameters"),
+    }
+    if path.startswith("/api/") and (request.method, path) not in public:
         # Cookie session first (remember me)
         token = request.cookies.get("dashboard_session")
         if token and token in DASHBOARD_SESSIONS:
@@ -855,6 +922,13 @@ class RunConfig(BaseModel):
     cores: int = min(psutil.cpu_count(logical=False) or 4, 4)
     auto_rebuild: bool = True
     force_overwrite: Optional[bool] = None
+    is_optimizer: bool = False
+    optimizer_method: str = "bobyqa"
+    optimizer_multistart: int = 1
+    optimizer_mcmc_steps: int = 100
+    profile_param: Optional[str] = None
+    profile_range: Optional[list[float]] = None
+    profile_steps: int = 8
 
     @field_validator('config_name')
     @classmethod
@@ -912,7 +986,11 @@ def sanitize_config_name(name: str) -> str:
     # Portable default: project root or cwd (no machine-specific hardcode)
     workspace_root = os.environ.get("DASHBOARD_WORKSPACE_ROOT") or os.getcwd()
     allowed_dir = os.path.abspath(workspace_root)
-    if not abs_path.startswith(allowed_dir):
+    try:
+        common = os.path.commonpath([abs_path, allowed_dir])
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Access denied: file must be located inside the allowed workspace directory.")
+    if common != allowed_dir:
         raise HTTPException(status_code=400, detail="Access denied: file must be located inside the allowed workspace directory.")
     # Return relative if possible, but keep abs for backward (callers expect abs in some places)
     return abs_path
@@ -948,7 +1026,10 @@ class StateManager:
         self.external_logs = []
         self.active_yaml_path = ""
         self.current_status = "idle"
+        self.is_optimizer = False
+        self.model_type = "general"  # Initialize for tracking database logging
         self.watchdog_alerts = []
+        self.auto_apply_watchdog = True
         self.run_start_time = None
         self.localtunnel_url = None
         self.cosmo_curves_cache = None
@@ -957,6 +1038,7 @@ class StateManager:
         self.last_frame_mod_time = 0
         self.last_frame_hash = None
         self.last_posterior_sig = None
+        self.is_starting = False  # Guard to prevent concurrent start_run calls (used by @prevent_concurrent_starts)
 
         # Log parser offsets/caches
         self.log_eval_position = 0
@@ -1098,7 +1180,11 @@ def _load_json_store(path: Path, default: dict) -> dict:
     if path.exists():
         try:
             with open(path, 'r') as f:
-                return json.load(f)
+                data = json.load(f)
+                # Convert rate limit lists back to deques for O(1) operations
+                if path == RATE_LIMITS_FILE:
+                    return {k: collections.deque(v) if isinstance(v, list) else v for k, v in data.items()}
+                return data
         except Exception:
             pass
     return default
@@ -1106,14 +1192,27 @@ def _load_json_store(path: Path, default: dict) -> dict:
 def _save_json_store(path: Path, data: dict):
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        def json_ready(value):
+            if isinstance(value, collections.deque):
+                return list(value)
+            if isinstance(value, dict):
+                return {k: json_ready(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [json_ready(v) for v in value]
+            return value
         with open(path, 'w') as f:
-            json.dump(data, f, indent=2, default=str)
+            json.dump(json_ready(data), f, indent=2)
     except Exception:
         pass
 
 # Load on module import / startup
 DASHBOARD_SESSIONS = _load_json_store(SESSIONS_FILE, {})
 RATE_LIMIT_STORE = _load_json_store(RATE_LIMITS_FILE, {})
+# Normalize persisted rate-limit entries back to deques (JSON stores as lists)
+RATE_LIMIT_STORE = {
+    k: collections.deque(v)
+    for k, v in RATE_LIMIT_STORE.items()
+}
 
 # Clean expired sessions
 now = time.time()
@@ -1195,9 +1294,16 @@ def check_rate_limit(request: Request, endpoint: str, max_calls: int = 5, window
         _save_json_store(RATE_LIMITS_FILE, {k: list(v) for k, v in RATE_LIMIT_STORE.items()})
     return False
 
-# Import parser functions from modular package
-from parsers.logs import safe_parse_python_dict, get_best_fit_from_log, extract_model_struggles
-from parsers.polychord import get_output_prefix_from_yaml, get_model_yaml_path, parse_polychord_stats, get_best_fit_details
+# Import parser functions from modular package (via adapter layer for robustness)
+try:
+    from parsers.logs import safe_parse_python_dict, get_best_fit_from_log, extract_model_struggles
+except Exception:
+    def safe_parse_python_dict(*args, **kwargs):
+        return {}
+    def get_best_fit_from_log(*args, **kwargs):
+        return None
+    def extract_model_struggles(*args, **kwargs):
+        return {}
 
 # Save originals to prevent recursion after rebinding names
 _original_get_best_fit_details = get_best_fit_details
@@ -1546,13 +1652,13 @@ def check_and_update_history():
             state.last_frame_hash = curr_hash
             state.last_posterior_sig = curr_posterior_sig or state.last_posterior_sig
 
-            hist_dir = Path("dashboard/history")
+            hist_dir = Path("cosmic_dashboard/frontend/history")
             hist_dir.mkdir(parents=True, exist_ok=True)
 
             if len(state.history_frames) >= 100:
                 oldest_frame = state.history_frames.pop(0)
                 try:
-                    old_path = Path("dashboard") / oldest_frame.lstrip("/")
+                    old_path = Path("cosmic_dashboard/frontend") / oldest_frame.lstrip("/")
                     if old_path.exists():
                         old_path.unlink()
                 except Exception: pass
@@ -2102,7 +2208,7 @@ def get_classy_for_engine(engine: dict | None = None):
             added.append(engine["class_path"])
         # Attempt to clear previous classy to allow swap (best-effort)
         for mod in list(sys.modules.keys()):
-            if mod == "classy" or mod.startswith("classy."):
+            if "classy" in mod:
                 del sys.modules[mod]
         from classy import Class
         return Class
@@ -2638,141 +2744,64 @@ async def get_metrics():
     content = "\n".join(lines) + "\n"
     return FastAPIResponse(content=content, media_type="text/plain; version=0.0.4")
 
-class AdoptedProcess:
-    def __init__(self, pid):
-        self.pid = pid
-        self.returncode = 0
-    def poll(self):
-        import psutil
-        if psutil.pid_exists(self.pid):
-            try:
-                p = psutil.Process(self.pid)
-                if p.status() == psutil.STATUS_ZOMBIE:
-                    return 0
-                return None
-            except psutil.NoSuchProcess:
-                return 0
-        return 0
 
-def find_and_adopt_running_cobaya():
-    """Adopt any existing Cobaya run (useful after dashboard restart)."""
-
-
-    if state.running_process is not None:
-        return  # Already tracking a process
-
-    import psutil
-    for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time']):
-        try:
-            cmdline = proc.info.get('cmdline')
-            if not cmdline:
-                continue
-
-            cmd_str = " ".join(cmdline).lower()
-
-            if "cobaya" in cmd_str and "run" in cmd_str:
-                yaml_file = None
-                for arg in cmdline:
-                    if arg.endswith(('.yaml', '.ini')):
-                        yaml_file = arg
-                        break
-                if yaml_file:
-                    pid = proc.info['pid']
-                    state.running_process = AdoptedProcess(pid)
-                    state.active_yaml_path = yaml_file
-                    state.active_output_prefix = get_output_prefix_from_yaml(state.active_yaml_path)
-                    state.current_status = "running"
-                    state.run_start_time = proc.info.get('create_time')
-                    log_dashboard_error(f"✅ Adopted running Cobaya process: PID {pid}, Config: {state.active_yaml_path}, Output Prefix: {state.active_output_prefix}", console=True)
-                    break
-        except Exception:
-            continue
-
-    # Also adopt the running monitor script (plot_chains.py) if the run is active
-    if state.running_process is not None and state.monitor_process is None:
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-            try:
-                cmdline = proc.info.get('cmdline')
-                if cmdline and "plot_chains.py" in " ".join(cmdline) and state.active_yaml_path in " ".join(cmdline):
-                    state.monitor_process = AdoptedProcess(proc.info['pid'])
-                    log_dashboard_error(f"✅ Adopted running Monitor process: PID {proc.info['pid']}", console=True)
-                    break
-            except Exception:
-                pass
-
-        # Self-healing: if no monitor process is running but we adopted a Cobaya run, start one
-        # But skip if we intentionally aborted/stopped (user pressed Abort, don't respawn monitor)
-        if state.monitor_process is None and not getattr(state, 'intentionally_stopped', False):
-            python_executable, _, monitor_env = resolve_cobaya_runtime(get_active_class_engine())
-            monitor_cmd = [
-                python_executable, "plot_chains.py",
-                "--config", state.active_yaml_path,
-                "--monitor-and-stop",
-                "--interval", "150",
-            ]
-            state.monitor_process = subprocess.Popen(
-                monitor_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=monitor_env,
-                start_new_session=True,
-            )
-            log_dashboard_error(f"Spawned self-healed Monitor process: PID {state.monitor_process.pid}")
+@app.get("/api/run_summary")
+async def run_summary(output_prefix: Optional[str] = None):
+    """Aggregate end-of-run summary: delegates to backend.run_summary.build_run_summary for logic."""
+    try:
+        from prtoe_class.backend.run_summary import build_run_summary
+        res = build_run_summary(output_prefix)
+        return JSONResponse(res)
+    except HTTPException:
+        raise
+    except ValueError as ve:
+        # build_run_summary raises ValueError for missing prefix (was HTTPException 400)
+        raise HTTPException(status_code=400, detail=str(ve))
+    except RuntimeError as re:
+        log_dashboard_error(str(re))
+        raise HTTPException(status_code=500, detail=str(re))
+    except Exception as e:
+        log_dashboard_error(f"run_summary error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-async def background_process_watcher():
+class ProfileScanRequest(BaseModel):
+    parameter: str
+    min_val: float
+    max_val: float
+    steps: int
 
-    while True:
-        try:
-            if not state.running_process:
-                find_and_adopt_running_cobaya()
 
-            if state.running_process:
-                if state.running_process.poll() is None:
-                    state.current_status = "running"
-                else:
-                    state.current_status = classify_finished_run_status(
-                        state.running_process.returncode, state.active_output_prefix
-                    )
-                    crash_msg = detect_run_crash_in_log(
-                        f"{state.active_output_prefix}.log" if state.active_output_prefix else None
-                    )
-                    if crash_msg:
-                        log_dashboard_error(f"[RUN FAILED] {crash_msg}", console=True)
-                        # Create structured alert object for frontend compatibility
-                        crash_alert = {
-                            "parameter": "Run Failure",
-                            "status": crash_msg,
-                            "suggestion": "Check the log file for details and fix the underlying issue."
-                        }
-                        # Check if this alert already exists (by comparing status message)
-                        alert_exists = any(
-                            isinstance(alert, dict) and alert.get("status") == crash_msg
-                            for alert in state.watchdog_alerts
-                        )
-                        if not alert_exists:
-                            state.watchdog_alerts.append(crash_alert)
-                    log_run_to_db(state.active_yaml_path or "", getattr(state, 'model_type', 'general'), state.current_status, state.active_output_prefix)
-                    if state.current_status == "completed" and "lcdm" in (state.active_output_prefix or "").lower():
-                        try:
-                            auto_archive_lcdm()
-                        except Exception as ex:
-                            log_dashboard_error(f"Background auto-archiving LCDM completed run failed: {ex}")
-                    state.running_process = None
-                    state.intentionally_stopped = False
-                    # Broadcast status change via WS for real-time clients
-                    try:
-                        current = await get_status()
-                        await manager.broadcast({"type": "status_update", "data": current})
-                        await send_notification("run_completed", {"status": state.current_status, "prefix": state.active_output_prefix})
-                    except Exception:
-                        pass
-        except Exception as e:
-            try:
-                log_dashboard_error(f"Error in background_process_watcher: {e}")
-            except Exception:
-                pass
-        await asyncio.sleep(5)
+@app.post("/api/validate_profile_scan")
+async def validate_profile_scan(req: ProfileScanRequest, request: Request = None):
+    """Validate profile-scan inputs server-side. Returns valid/accepted or 400 with reason.
+    This endpoint performs strict sanity checks but does not run the scan here.
+    """
+    if request and check_rate_limit(request, "/api/validate_profile_scan", max_calls=20, window_sec=60):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded for profile validation.")
+    if req.steps <= 0:
+        raise HTTPException(status_code=400, detail="steps must be a positive integer")
+    if req.steps > 2000:
+        raise HTTPException(status_code=400, detail="steps too large (max 2000)")
+    if not math.isfinite(req.min_val) or not math.isfinite(req.max_val):
+        raise HTTPException(status_code=400, detail="min and max must be finite numbers")
+    if req.min_val == req.max_val:
+        raise HTTPException(status_code=400, detail="min and max cannot be equal")
+    if req.min_val > req.max_val:
+        # Support reversed ranges by rejecting explicitly
+        raise HTTPException(status_code=400, detail="min_val must be less than max_val")
+    rng = req.max_val - req.min_val
+    if rng <= 0:
+        raise HTTPException(status_code=400, detail="Invalid range")
+    # Enforce reasonable sampling density limit
+    if (rng / max(abs(req.min_val), abs(req.max_val), 1.0)) < 1e-9:
+        raise HTTPException(status_code=400, detail="Range too small relative to parameter magnitude")
+    # Passed all checks
+    return JSONResponse({"valid": True, "parameter": req.parameter, "min": req.min_val, "max": req.max_val, "steps": req.steps})
+
+# Adopted process and watchdog logic moved to prtoe_class.backend.process_watcher for clarity and testability.
+# Import the implementations (lazy import used inside the module to avoid circular import at top-level).
+from prtoe_class.backend.process_watcher import AdoptedProcess, find_and_adopt_running_cobaya, background_process_watcher
 
 
 # Duplicate lifespan removed (primary one earlier in file, before the app=FastAPI(..., lifespan=lifespan) line).
@@ -3057,12 +3086,27 @@ async def supported_models():
     }
 
 @app.websocket("/ws/status")
-async def websocket_status(websocket: WebSocket):
+async def websocket_status(websocket: WebSocket, token: str = None):
     """WebSocket for real-time status updates (production UX: reduces polling, live feel for long runs)."""
+    # Authenticate via dashboard_session cookie or token query param
+    session_token = token or websocket.query_params.get("token")
+    cookie_token = websocket.cookies.get("dashboard_session")
+    auth_token = session_token or cookie_token
+    
+    if not auth_token or auth_token not in DASHBOARD_SESSIONS:
+        await websocket.close(code=1008, reason="Unauthorized")
+        return
+    
+    # Check session expiration
+    sess = DASHBOARD_SESSIONS[auth_token]
+    if time.time() >= sess.get("exp", 0):
+        DASHBOARD_SESSIONS.pop(auth_token, None)
+        await websocket.close(code=1008, reason="Session expired")
+        return
+    
     await manager.connect(websocket)
     try:
         # Send initial status
-        # Note: auth is via middleware/cookie for WS in production; for simplicity here we assume prior auth or add token param
         initial_status = await get_status()  # reuse but careful with async
         await websocket.send_json({"type": "status", "data": initial_status})
         while True:
@@ -3091,7 +3135,10 @@ async def get_status():
     ncdm_mass = None
 
     if not state.running_process:
-        find_and_adopt_running_cobaya()
+        # FIX: Run blocking I/O in thread pool to avoid blocking event loop
+        import asyncio
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, find_and_adopt_running_cobaya)
 
     if state.running_process:
         if state.running_process.poll() is None:
@@ -3148,6 +3195,7 @@ async def get_status():
         "external_logs": list(state.external_logs),
         "class_error_logs": [],
         "watchdog_alerts": state.watchdog_alerts,
+        "auto_apply_watchdog": state.auto_apply_watchdog,
         "speed": "-",
         "eta": "-",
         "constraints": [],
@@ -3249,8 +3297,13 @@ async def get_status():
                 is_stale = True
 
         stats_data.update(parse_polychord_stats(stats_file, resume_file))
+        if getattr(state, "is_optimizer", False):
+            evals = get_log_eval_count(f"{state.active_output_prefix}.log")
+            stats_data["dead_points"] = evals
 
-        fit_details = None if is_stale else get_best_fit_details(state.active_output_prefix)
+        fit_details = None
+        if not getattr(state, "is_optimizer", False) and not is_stale:
+            fit_details = get_best_fit_details(state.active_output_prefix)
         if fit_details is not None:
             stats_data["best_chi2"] = fit_details["total"]
             stats_data["best_cmb"] = fit_details.get("cmb", 0.0)
@@ -3260,6 +3313,61 @@ async def get_status():
             stats_data["best_lensing"] = fit_details.get("lensing", 0.0)
             stats_data["best_other"] = fit_details.get("other", 0.0)
             stats_data["best_raw_params"] = fit_details["raw_params"]
+
+        # BOBYQA OPTIMIZER FIX: Parse the seeded BOBYQA run log for real-time chi2, eval counts,
+        # and best-fit parameters. This covers run_optimizer.py (multistart BOBYQA) runs which
+        # write to chains/seeded_run_phase1.log instead of a .summary.json. We try:
+        #   1. The active_output_prefix .log symlink (prtoe_poly.log)
+        #   2. The explicit seeded_run_phase1.log sidecar file
+        if getattr(state, "is_optimizer", False) and not is_stale:
+            try:
+                from parsers.logs import get_best_fit_from_bobyqa_log
+            except Exception:
+                try:
+                    import importlib.util as _ilu
+                    import pathlib as _pl
+                    _lp = _pl.Path(__file__).resolve().parent / "parsers" / "logs.py"
+                    _spec = _ilu.spec_from_file_location("_bbyq_logs", str(_lp))
+                    _mod = _ilu.module_from_spec(_spec)
+                    _spec.loader.exec_module(_mod)
+                    get_best_fit_from_bobyqa_log = getattr(_mod, "get_best_fit_from_bobyqa_log", None)
+                except Exception:
+                    get_best_fit_from_bobyqa_log = None
+
+            if get_best_fit_from_bobyqa_log is not None:
+                # Candidate log files in priority order
+                bobyqa_log_candidates = []
+                if state.active_output_prefix:
+                    bobyqa_log_candidates.append(f"{state.active_output_prefix}.log")
+                bobyqa_log_candidates.append("chains/seeded_run_phase1.log")
+
+                bobyqa_result = None
+                for _cand in bobyqa_log_candidates:
+                    if Path(_cand).exists():
+                        try:
+                            res_temp = get_best_fit_from_bobyqa_log(_cand, state)
+                            if res_temp and res_temp.get("total_evals", 0) > 0:
+                                bobyqa_result = res_temp
+                                break
+                        except Exception:
+                            pass
+
+                if bobyqa_result:
+                    # Override/supplement stats_data with live BOBYQA values
+                    if bobyqa_result.get("total") is not None:
+                        stats_data["best_chi2"] = bobyqa_result["total"]
+                    if bobyqa_result.get("current_chi2") is not None:
+                        stats_data["current_chi2"] = bobyqa_result["current_chi2"]
+                    if bobyqa_result.get("raw_params"):
+                        stats_data["best_raw_params"] = bobyqa_result["raw_params"]
+                    if bobyqa_result.get("total_evals", 0) > 0:
+                        stats_data["dead_points"] = bobyqa_result["total_evals"]
+                        stats_data["run_health"] = stats_data.get("run_health", {})
+                        stats_data["run_health"]["total_evals"] = bobyqa_result["total_evals"]
+                    # Surface per-run results and progress for the CosmicForge optimizer tab
+                    stats_data["optimizer_run_results"] = bobyqa_result.get("run_results", [])
+                    stats_data["optimizer_current_run"] = bobyqa_result.get("current_run", 0)
+                    stats_data["optimizer_total_runs"] = bobyqa_result.get("total_runs", 0)
 
         # Estimate target dead points based on dimensions and live points (nlive)
         ndims = 8  # Default dimensions for typical cosmological runs
@@ -3304,7 +3412,13 @@ async def get_status():
         if not nlive:
             nlive = 200  # Default live points fallback
 
-        target_pts = max(3000, ndims * nlive)
+        if getattr(state, "is_optimizer", False):
+            multistart = getattr(state, "optimizer_multistart", 2)
+            mcmc_steps = getattr(state, "optimizer_mcmc_steps", 50)
+            target_pts = max(10, multistart * 60 + multistart * mcmc_steps)
+            stats_data["nlive"] = 1
+        else:
+            target_pts = max(3000, ndims * nlive)
 
         # Speed & ETA
         if state.current_status == "running" and state.run_start_time:
@@ -3874,10 +3988,117 @@ async def get_status():
 
     stats_data["model_type"] = model_type
     stats_data["is_lcdm"] = model_type == "lcdm"  # backward compat
+    
+    # CRITICAL FIX 1: Add is_optimizer flag so frontend can detect and display optimizer tab
+    is_opt_from_state = getattr(state, "is_optimizer", False)
+    stats_data["is_optimizer"] = is_opt_from_state
+    
+    # CRITICAL FIX 4: Fallback - check if active run uses optimizer script
+    # This catches cases where process watcher didn't set is_optimizer correctly
+    if not is_opt_from_state and state.active_yaml_path:
+        yaml_lower = state.active_yaml_path.lower()
+        if "run_optimizer" in yaml_lower or "run_cosmicforge" in yaml_lower:
+            stats_data["is_optimizer"] = True
+            state.is_optimizer = True
+    if not is_opt_from_state and state.active_output_prefix:
+        prefix_lower = state.active_output_prefix.lower()
+        if "run_optimizer" in prefix_lower or "run_cosmicforge" in prefix_lower:
+            stats_data["is_optimizer"] = True
+            state.is_optimizer = True
+
+    # AUTO-DETECT: if no active_output_prefix but a summary.json exists in chains/, surface it.
+    # This makes CosmicForge panels work even when the optimizer was launched manually.
+    if not stats_data.get("active_output_prefix"):
+        try:
+            chains_dir = Path("chains")
+            if chains_dir.exists():
+                candidates = sorted(
+                    chains_dir.glob("*.summary.json"),
+                    key=lambda f: f.stat().st_mtime,
+                    reverse=True
+                )
+                if candidates:
+                    auto_prefix = str(candidates[0]).replace(".summary.json", "")
+                    stats_data["active_output_prefix"] = auto_prefix
+                    stats_data["is_optimizer"] = True
+                    if not state.active_output_prefix:
+                        state.active_output_prefix = auto_prefix
+                        state.is_optimizer = True
+        except Exception:
+            pass
+
+    # CRITICAL FIX 2: For optimizer runs, load data from .summary.json instead of .stats
+    if getattr(state, "is_optimizer", False) and state.active_output_prefix:
+
+        summary_path = Path(f"{state.active_output_prefix}.summary.json")
+        if summary_path.exists():
+            try:
+                with open(summary_path, 'r') as f:
+                    optimizer_summary = json.load(f)
+                # Expose optimizer-specific metrics for tracker display
+                if "best_chi2" in optimizer_summary:
+                    stats_data["best_chi2"] = optimizer_summary["best_chi2"]
+                if "best_cmb" in optimizer_summary:
+                    stats_data["best_cmb"] = optimizer_summary["best_cmb"]
+                if "best_bao" in optimizer_summary:
+                    stats_data["best_bao"] = optimizer_summary["best_bao"]
+                if "best_sn" in optimizer_summary:
+                    stats_data["best_sn"] = optimizer_summary["best_sn"]
+                if "modes" in optimizer_summary:
+                    stats_data["n_modes"] = len(optimizer_summary["modes"])
+                    stats_data["best_mode_index"] = optimizer_summary.get("best_mode_index", 0)
+                if "constraint_violations" in optimizer_summary:
+                    stats_data["constraint_violations"] = optimizer_summary["constraint_violations"]
+                if "total_evals" in optimizer_summary:
+                    stats_data["total_evals"] = optimizer_summary["total_evals"]
+                if "convergence_detected" in optimizer_summary:
+                    stats_data["convergence_detected"] = optimizer_summary["convergence_detected"]
+            except Exception as e:
+                logger.debug(f"Failed to load optimizer summary: {e}")
+        else:
+            # FALLBACK: Parse .txt file if .summary.json doesn't exist (for legacy runs)
+            txt_path = Path(f"{state.active_output_prefix}.txt")
+            if txt_path.exists():
+                # Avoid stale files from previous runs
+                is_txt_stale = False
+                if state.run_start_time and txt_path.stat().st_mtime < state.run_start_time - 2.0:
+                    is_txt_stale = True
+                
+                if not is_txt_stale:
+                    try:
+                        with open(txt_path, 'r') as f:
+                            txt_content = f.read()
+                        # Extract best chi2 from the last line (polyChord output format)
+                        lines = txt_content.strip().split('\n')
+                        if lines:
+                            last_line = lines[-1].split()
+                            if len(last_line) >= 3:
+                                try:
+                                    stats_data["best_chi2"] = float(last_line[2])
+                                    stats_data["total_evals"] = len(lines) - 1  # Count posterior samples
+                                except (ValueError, IndexError):
+                                    pass
+                    except Exception as e:
+                        logger.debug(f"Failed to parse optimizer .txt file: {e}")
+        
+        # CRITICAL FIX 5: Load mode metadata in real-time for live tracker display
+        modes_path = Path(f"{state.active_output_prefix}.modes.json")
+        if modes_path.exists():
+            try:
+                with open(modes_path, 'r') as f:
+                    modes_data = json.load(f)
+                    if "modes" in modes_data:
+                        stats_data["modes"] = modes_data["modes"]
+                        stats_data["n_modes"] = len(modes_data["modes"])
+            except Exception as e:
+                logger.debug(f"Failed to load modes metadata: {e}")
 
     # Always ensure history frames (evolution movie) are up to date in response
     # (the check itself is idempotent and only adds on real posterior change)
-    check_and_update_history()
+    # FIX: Run in thread pool to avoid blocking event loop
+    import asyncio
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, check_and_update_history)
     stats_data["history_frames"] = list(state.history_frames)
 
     return stats_data
@@ -4016,7 +4237,64 @@ async def upload_config(file: UploadFile = File(...), request: Request = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not save uploaded file: {e}")
 
+# Robust decorator to prevent concurrent start_run invocations.
+# Uses an asyncio.Lock for async endpoints and a threading.Lock for sync endpoints.
+# Immediate rejection on contention to avoid long waits.
+
+def prevent_concurrent_starts(func):
+    import functools
+
+    # Module-level locks (created lazily)
+    global _START_RUN_ASYNC_LOCK, _START_RUN_SYNC_LOCK
+    try:
+        _ = _START_RUN_ASYNC_LOCK
+    except NameError:
+        _START_RUN_ASYNC_LOCK = asyncio.Lock()
+    try:
+        _ = _START_RUN_SYNC_LOCK
+    except NameError:
+        _START_RUN_SYNC_LOCK = threading.Lock()
+
+    if asyncio.iscoroutinefunction(func):
+        @functools.wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            # Fast-path: if a run is already in progress, reject
+            if state.running_process and getattr(state.running_process, 'poll', lambda: 1)() is None:
+                raise HTTPException(status_code=409, detail="A run is already in progress.")
+            # Try to acquire async lock with tiny timeout to avoid blocking
+            try:
+                await asyncio.wait_for(_START_RUN_ASYNC_LOCK.acquire(), timeout=0.05)
+            except asyncio.TimeoutError:
+                # Lock held: another start is in progress
+                raise HTTPException(status_code=409, detail="Another run is currently being started. Please wait.")
+            try:
+                return await func(*args, **kwargs)
+            finally:
+                try:
+                    _START_RUN_ASYNC_LOCK.release()
+                except Exception:
+                    pass
+        return async_wrapper
+    else:
+        @functools.wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            if state.running_process and getattr(state.running_process, 'poll', lambda: 1)() is None:
+                raise HTTPException(status_code=409, detail="A run is already in progress.")
+            # Try non-blocking threading lock
+            acquired = _START_RUN_SYNC_LOCK.acquire(blocking=False)
+            if not acquired:
+                raise HTTPException(status_code=409, detail="Another run is currently being started. Please wait.")
+            try:
+                return func(*args, **kwargs)
+            finally:
+                try:
+                    _START_RUN_SYNC_LOCK.release()
+                except Exception:
+                    pass
+        return sync_wrapper
+
 @app.post("/api/start_run")
+@prevent_concurrent_starts
 async def start_run(config: RunConfig, request: Request = None):
     """Starts a Cobaya run with the specified configuration."""
     if request and check_rate_limit(request, "/api/start_run", max_calls=2, window_sec=20):
@@ -4027,6 +4305,25 @@ async def start_run(config: RunConfig, request: Request = None):
     BEST_FIT_LOG_CACHE = None
     RAW_FILE_POSITIONS = {}
     BEST_FIT_FILE_CACHE = {}
+    
+    # Memory monitoring and cache management for long runs
+    MEMORY_CHECK_INTERVAL = 60  # seconds between memory checks
+    MEMORY_THRESHOLD_MB = 1024  # Clear caches if memory exceeds this
+    HISTORY_FRAMES_LIMIT = 100  # Max history frames to keep
+    last_memory_check = time.time()
+    
+    def clear_run_caches():
+        """Clear in-memory caches to prevent memory bloat on long runs."""
+        nonlocal BEST_FIT_LOG_CACHE, RAW_FILE_POSITIONS, BEST_FIT_FILE_CACHE
+        old_memory = psutil.Process().memory_info().rss / 1024**2
+        BEST_FIT_LOG_CACHE = None
+        RAW_FILE_POSITIONS.clear()
+        BEST_FIT_FILE_CACHE.clear()
+        new_memory = psutil.Process().memory_info().rss / 1024**2
+        freed_mb = old_memory - new_memory
+        if freed_mb > 10:  # Only log if significant amount freed
+            log_dashboard_error(f"[CACHE] Cleared caches, freed ~{freed_mb:.1f} MB (was {old_memory:.1f} MB, now {new_memory:.1f} MB)", console=False)
+        return freed_mb > 0
 
     state.history_frames = []
     state.last_frame_mod_time = 0
@@ -4039,7 +4336,7 @@ async def start_run(config: RunConfig, request: Request = None):
     state.intentionally_stopped = False
 
     try:
-        hist_dir = Path("dashboard/history")
+        hist_dir = Path("cosmic_dashboard/frontend/history")
         if hist_dir.exists():
             shutil.rmtree(hist_dir)
         hist_dir.mkdir(parents=True, exist_ok=True)
@@ -4081,12 +4378,52 @@ async def start_run(config: RunConfig, request: Request = None):
     log_dashboard_error(f"[START] Using non_linear={nl} for CLASS (halofit enforced for PRTOE compatibility).", console=True)
 
     # Save a copy of this run configuration as "last_run.yaml" in templates (single write).
+    # Convert absolute paths to relative where possible for machine portability.
     templates_dir = Path("templates")
     templates_dir.mkdir(parents=True, exist_ok=True)
     try:
-        shutil.copy2(config_file, templates_dir / "last_run.yaml")
+        # Create a portable copy with relative paths where applicable
+        portable_cfg = copy.deepcopy(run_cfg)
+        
+        def make_paths_portable(obj, base_dir=Path.cwd()):
+            """Recursively convert absolute paths to relative paths in config object."""
+            if isinstance(obj, dict):
+                return {k: make_paths_portable(v, base_dir) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [make_paths_portable(item, base_dir) for item in obj]
+            elif isinstance(obj, str) and obj.startswith('/'):
+                try:
+                    abs_p = Path(obj)
+                    # Try to make relative to current working directory
+                    rel_p = abs_p.relative_to(base_dir)
+                    return str(rel_p)
+                except ValueError:
+                    # If can't make relative, use basename only for portability
+                    # (original path stored in metadata for reference)
+                    return abs_p.name
+            return obj
+        
+        portable_cfg = make_paths_portable(portable_cfg)
+        
+        # Write portable config to last_run.yaml
+        last_run_path = templates_dir / "last_run.yaml"
+        with open(last_run_path, 'w') as f:
+            yaml.dump(portable_cfg, f, default_flow_style=False, sort_keys=False)
+        
+        # Also save metadata with original absolute paths for debugging/reference
+        metadata = {
+            "original_config": str(config_file),
+            "saved_at": time.strftime('%Y-%m-%d %H:%M:%S'),
+            "portable_paths_mode": True,
+            "cwd_when_saved": str(Path.cwd()),
+        }
+        metadata_path = templates_dir / ".last_run_metadata.json"
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        log_dashboard_error(f"[PORTABLE CONFIG] Saved last_run.yaml with relative paths for portability", console=True)
     except Exception as e:
-        log_dashboard_error(f"Warning: Could not save last run template: {e}", console=True)
+        log_dashboard_error(f"Warning: Could not save portable last run template: {e}", console=True)
 
     # Auto-rebuild logic (no shell=True: env vars passed explicitly)
     if config.auto_rebuild:
@@ -4191,28 +4528,50 @@ async def start_run(config: RunConfig, request: Request = None):
     if os.path.isdir(_clik_lib):
         _cur_ld = _run_env.get("LD_LIBRARY_PATH", "")
         _run_env["LD_LIBRARY_PATH"] = _clik_lib + (os.pathsep + _cur_ld if _cur_ld else "")
+    state.is_optimizer = config.is_optimizer
 
-    # --- Use --no-mpi to bypass MPICH segfault under WSL ---
-    # PolyChord and MPICH together crash with signal 11 on WSL2 kernel 6.6.87.
-    # Running in serial (--no-mpi) is safer and avoids the MPI process tree complexity.
-    cobaya_cmd = [
-        python_executable, "-m", "cobaya", "run",
-        str(config_file),
-        "--packages-path", cobaya_packages_path,
-        run_flag,
-    ]
+    if config.is_optimizer:
+        state.optimizer_multistart = config.optimizer_multistart
+        state.optimizer_mcmc_steps = config.optimizer_mcmc_steps
+        cobaya_cmd = [
+            python_executable, "-u", "run_cosmicforge.py",
+            str(config_file),
+            "--packages-path", cobaya_packages_path,
+            "--cores", str(config.cores),
+            "--method", config.optimizer_method,
+            "--multistart", str(config.optimizer_multistart),
+            "--mcmc-steps", str(config.optimizer_mcmc_steps)
+        ]
+        if config.profile_param:
+            cobaya_cmd.extend(["--profile", config.profile_param])
+            if config.profile_range:
+                cobaya_cmd.extend(["--profile-range", str(config.profile_range[0]), str(config.profile_range[1])])
+            cobaya_cmd.extend(["--profile-steps", str(config.profile_steps)])
+    else:
+        # --- Use --no-mpi to bypass MPICH segfault under WSL ---
+        # PolyChord and MPICH together crash with signal 11 on WSL2 kernel 6.6.87.
+        # Running in serial (--no-mpi) is safer and avoids the MPI process tree complexity.
+        cobaya_cmd = [
+            python_executable, "-m", "cobaya", "run",
+            str(config_file),
+            "--packages-path", cobaya_packages_path,
+            run_flag,
+        ]
 
     # Ensure conda bin is first in PATH (for mpirun etc.), but do NOT override
     # LD_LIBRARY_PATH — prepending conda lib/ causes clik (Planck likelihood) to
     # SIGSEGV after loading. The conda Python binary already has the correct rpath.
     if conda_prefix and os.path.isdir(os.path.join(conda_prefix, "bin")):
         _run_env["PATH"] = os.path.join(conda_prefix, "bin") + os.pathsep + _run_env.get("PATH", "")
+    monitor_interval = "10" if state.is_optimizer else "150"
     monitor_cmd = [
         python_executable, "plot_chains.py",
         "--config", str(config_file),
         "--monitor-and-stop",
-        "--interval", "150",
+        "--interval", monitor_interval,
     ]
+    if state.is_optimizer:
+        monitor_cmd.append("--optimizer")
 
     try:
         state.current_status = "running"
@@ -4241,6 +4600,7 @@ async def start_run(config: RunConfig, request: Request = None):
         # Log the actual command for debugging
         log_dashboard_error(f"[START] Launched: {' '.join(cobaya_cmd)}", console=True)
 
+        # Launch the monitor process for all runs (standard MCMC or optimizer)
         state.monitor_process = subprocess.Popen(
             monitor_cmd,
             stdout=subprocess.PIPE,
@@ -4455,6 +4815,153 @@ async def get_logs(lines: int = 200):
         return {"lines": tail, "path": str(log_path), "total": len(all_lines)}
     except Exception as e:
         return {"lines": [], "path": str(log_path), "error": str(e)}
+
+def parse_multimodal_comparison(filepath: Path) -> dict:
+    if not filepath.exists():
+        return {"modes": [], "tensions": [], "combined_logz": None, "exploration_health": None}
+    try:
+        content = filepath.read_text()
+        modes = []
+        tensions = []
+        combined_logz = None
+        exploration_health = None
+        
+        # Parse top-level metrics
+        for line in content.split("\n"):
+            if "Combined Multimodal Evidence ln(Z) :" in line:
+                try:
+                    combined_logz = float(line.split(":")[-1].strip())
+                except Exception:
+                    pass
+            elif "Unphysical Exploration Health      :" in line:
+                exploration_health = line.split(":")[-1].strip()
+        
+        parts = content.split("Mode: ")
+        for part in parts[1:]:
+            tension_part = None
+            if "Tension Metrics:" in part:
+                part, tension_part = part.split("Tension Metrics:", 1)
+                
+            lines = part.strip().split("\n")
+            mode_name = lines[0].strip()
+            
+            mode_data = {
+                "name": mode_name,
+                "chi2": None,
+                "penalized_chi2": None,
+                "viability_score": None,
+                "stability": None,
+                "isolation": None,
+                "log_z": None,
+                "acc_rate": None,
+                "params": {},
+                "metrics": {},
+                "likes": {}
+            }
+            
+            section = None
+            for line in lines[1:]:
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("---"):
+                    continue
+                if line.startswith("Total Chi2:"):
+                    mode_data["chi2"] = float(line.split("Total Chi2:")[1].strip())
+                    continue
+                if line.startswith("Raw Data Chi2:"):
+                    mode_data["chi2"] = float(line.split("Raw Data Chi2:")[1].strip())
+                    continue
+                if line.startswith("Penalized Chi2:"):
+                    mode_data["penalized_chi2"] = float(line.split("Penalized Chi2:")[1].strip())
+                    continue
+                if line.startswith("Viability Score:"):
+                    mode_data["viability_score"] = line.split("Viability Score:")[1].strip()
+                    continue
+                if line.startswith("Mode Stability (Basin Size):"):
+                    mode_data["stability"] = line.split(":")[-1].strip()
+                    continue
+                if line.startswith("Mode Isolation Index:"):
+                    mode_data["isolation"] = line.split(":")[-1].strip()
+                    continue
+                if line.startswith("Mode Evidence ln(Z):"):
+                    mode_data["log_z"] = line.split(":")[-1].strip()
+                    continue
+                if line.startswith("MCMC Acceptance Rate:"):
+                    mode_data["acc_rate"] = line.split(":")[-1].strip()
+                    continue
+                if line.startswith("Parameters:"):
+                    section = "params"
+                    continue
+                if line.startswith("Derived & Physical Metrics:"):
+                    section = "metrics"
+                    continue
+                if line.startswith("Likelihood Breakdown:"):
+                    section = "likes"
+                    continue
+                
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    k = k.strip()
+                    v = v.strip()
+                    if section == "params":
+                        mode_data["params"][k] = v
+                    elif section == "metrics":
+                        mode_data["metrics"][k] = v
+                    elif section == "likes":
+                        mode_data["likes"][k] = v
+                        
+            modes.append(mode_data)
+            
+            if tension_part:
+                t_lines = tension_part.strip().split("\n")
+                for t_line in t_lines:
+                    t_line = t_line.strip()
+                    if not t_line:
+                        continue
+                    try:
+                        modes_str, param_val = t_line.split("|", 1)
+                        mode1, mode2 = modes_str.split("vs", 1)
+                        param, val = param_val.split(":", 1)
+                        tensions.append({
+                            "mode1": mode1.strip(),
+                            "mode2": mode2.strip(),
+                            "param": param.strip(),
+                            "value": float(val.strip())
+                        })
+                    except Exception:
+                        pass
+                        
+        return {
+            "modes": modes,
+            "tensions": tensions,
+            "combined_logz": combined_logz,
+            "exploration_health": exploration_health
+        }
+    except Exception as e:
+        log_dashboard_error(f"Error parsing multimodal comparison: {e}")
+        return {"modes": [], "tensions": [], "combined_logz": None, "exploration_health": None}
+
+@app.get("/api/multimodal_comparison")
+async def get_multimodal_comparison():
+    """Returns parsed multimodal comparison data if available."""
+    prefix = getattr(state, "active_output_prefix", None)
+    if not prefix:
+        return {"status": "error", "message": "No active run"}
+    
+    comp_file = Path(f"{prefix}_modes_comparison.txt")
+    if not comp_file.exists():
+        return {"status": "error", "message": "Multimodal comparison report not found."}
+        
+    res = parse_multimodal_comparison(comp_file)
+    return {
+        "status": "success",
+        "modes": res["modes"],
+        "tensions": res["tensions"],
+        "combined_logz": res.get("combined_logz"),
+        "exploration_health": res.get("exploration_health")
+    }
+
 
 @app.post("/api/watchdog")
 async def update_watchdog(report: WatchdogReport):
@@ -4754,6 +5261,85 @@ async def compute_custom_derived(req: dict = Body(...)):
     """Support user-typed expressions for derived quantities and full posterior marginals if chain available.
     expressions: list of strings like "H0 - 73.04", "S8 - 0.776", "100*(H0-67.4)/67.4"
     """
+    import ast
+    import operator
+    
+    # Safe operators mapping
+    safe_operators = {
+        ast.Add: operator.add,
+        ast.Sub: operator.sub,
+        ast.Mult: operator.mul,
+        ast.Div: operator.truediv,
+        ast.Pow: operator.pow,
+        ast.USub: operator.neg,
+        ast.UAdd: operator.pos,
+    }
+    
+    def safe_eval(expr, safe_dict):
+        """Safely evaluate arithmetic expressions using AST parsing with bounds and finite checks."""
+        node = ast.parse(expr, mode='eval')
+        
+        def _eval(node):
+            if isinstance(node, ast.Constant):
+                if isinstance(node.value, (int, float)):
+                    # Check for reasonable bounds to prevent overflow
+                    if isinstance(node.value, float):
+                        if abs(node.value) > 1e100 or (abs(node.value) < 1e-100 and node.value != 0):
+                            raise ValueError(f"Constant {node.value} out of reasonable bounds")
+                    return node.value
+                else:
+                    raise ValueError(f"Constant {node.value} not allowed")
+            elif isinstance(node, ast.Name):
+                if node.id in safe_dict:
+                    val = safe_dict[node.id]
+                    if isinstance(val, (int, float)):
+                        # Check for reasonable bounds
+                        if isinstance(val, float):
+                            if abs(val) > 1e100 or (abs(val) < 1e-100 and val != 0):
+                                raise ValueError(f"Value {val} for {node.id} out of reasonable bounds")
+                    return val
+                else:
+                    raise ValueError(f"Name '{node.id}' not in safe context")
+            elif isinstance(node, ast.BinOp):
+                left = _eval(node.left)
+                right = _eval(node.right)
+                op_type = type(node.op)
+                if op_type in safe_operators:
+                    # Special bounds check for exponentiation
+                    if op_type == ast.Pow:
+                        # Limit exponent to reasonable range
+                        if isinstance(right, float) and abs(right) > 100:
+                            raise ValueError(f"Exponent {right} too large")
+                        # Limit base magnitude for large exponents
+                        if isinstance(right, float) and right > 10 and isinstance(left, float) and abs(left) > 100:
+                            raise ValueError(f"Base {left} too large for exponent {right}")
+                    result = safe_operators[op_type](left, right)
+                    # Check for finite result
+                    if isinstance(result, float) and not (result == result and abs(result) < float('inf')):
+                        raise ValueError(f"Result {result} is not finite")
+                    return result
+                else:
+                    raise ValueError(f"Operator {op_type.__name__} not allowed")
+            elif isinstance(node, ast.UnaryOp):
+                operand = _eval(node.operand)
+                op_type = type(node.op)
+                if op_type in safe_operators:
+                    result = safe_operators[op_type](operand)
+                    # Check for finite result
+                    if isinstance(result, float) and not (result == result and abs(result) < float('inf')):
+                        raise ValueError(f"Result {result} is not finite")
+                    return result
+                else:
+                    raise ValueError(f"Unary operator {op_type.__name__} not allowed")
+            else:
+                raise ValueError(f"Expression type {type(node).__name__} not allowed")
+        
+        result = _eval(node.body)
+        # Final finite check
+        if isinstance(result, float) and not (result == result and abs(result) < float('inf')):
+            raise ValueError(f"Final result {result} is not finite")
+        return result
+    
     expressions = req.get("expressions", [])
     engine = get_active_class_engine()
     best_params = get_current_best_fit_params()
@@ -4763,7 +5349,7 @@ async def compute_custom_derived(req: dict = Body(...)):
     safe_dict.update({k: v for k, v in best_params.items() if isinstance(v, (int, float))})
     for expr in expressions:
         try:
-            val = eval(expr, {"__builtins__": {}}, safe_dict)
+            val = safe_eval(expr, safe_dict)
             results[expr] = float(val)
         except Exception as e:
             results[expr] = f"error: {str(e)}"
@@ -5518,7 +6104,7 @@ async def reset_history():
     state.last_frame_hash = None
     state.last_posterior_sig = None
 
-    hist_dir = Path("dashboard/history")
+    hist_dir = Path("cosmic_dashboard/frontend/history")
     if hist_dir.exists():
         try:
             shutil.rmtree(hist_dir)
@@ -5570,6 +6156,16 @@ async def watchdog_restart(req: WatchdogRestartRequest, request: Request = None)
 
     asyncio.create_task(perform_restart())
     return {"message": "Watchdog-triggered restart initiated."}
+
+class WatchdogSettings(BaseModel):
+    auto_apply: bool
+
+@app.post("/api/settings/watchdog")
+async def update_watchdog_settings(settings: WatchdogSettings):
+    """Update automated watchdog prior widening & restart setting."""
+    state.auto_apply_watchdog = settings.auto_apply
+    log_dashboard_error(f"[SETTINGS] Watchdog automated actions set to {state.auto_apply_watchdog}", console=True)
+    return {"message": f"Watchdog auto-apply set to {state.auto_apply_watchdog}"}
 
 @app.post("/api/clear_watchdog_alerts")
 async def clear_watchdog_alerts():
@@ -5824,7 +6420,7 @@ async def get_corner_plot(
                             ax.scatter(samps[thinned_idx[0], idx_x], samps[thinned_idx[0], idx_y], color='#2ed573', s=15, zorder=10)
                             ax.scatter(samps[thinned_idx[-1], idx_x], samps[thinned_idx[-1], idx_y], color='#ff4757', s=15, zorder=10)
 
-        plot_out_path = Path("dashboard/corner_plot.png")
+        plot_out_path = Path("cosmic_dashboard/frontend/corner_plot.png")
         g.export(str(plot_out_path))
         plt.close('all')
 
@@ -6113,7 +6709,7 @@ async def download_reproducibility_pack(config_name: str = "uploaded_config.yaml
             if plot_path.exists():
                 zip_file.write(plot_path, arcname="posterior_triangle_plot.png")
 
-            corner_plot = Path("dashboard/corner_plot.png")
+            corner_plot = Path("cosmic_dashboard/frontend/corner_plot.png")
             if corner_plot.exists():
                 zip_file.write(corner_plot, arcname="posterior_corner_plot.png")
 
@@ -6132,7 +6728,7 @@ async def download_reproducibility_pack(config_name: str = "uploaded_config.yaml
             zip_file.writestr("README.txt", readme_txt)
 
         zip_buffer.seek(0)
-        zip_out_path = Path("dashboard/reproducibility_pack.zip")
+        zip_out_path = Path("cosmic_dashboard/frontend/reproducibility_pack.zip")
         with open(zip_out_path, "wb") as f:
             f.write(zip_buffer.getvalue())
 
@@ -6385,6 +6981,7 @@ async def playground_curves(req: PlaygroundRequest):
             w_scf = np.where(rho_scf > 0, p_scf / rho_scf, -1.0)
             w_sample = np.interp(z_sample, z_bg_model[sort_idx], w_scf[sort_idx]).tolist()
 
+            phi_interp = None  # default so the name always exists in scope
             if 'phi_scf' in bg_model:
                 phi_scf = np.array(bg_model['phi_scf'])
                 phi_interp = np.interp(z_sample, z_bg_model[sort_idx], phi_scf[sort_idx])
@@ -7098,7 +7695,7 @@ async def download_posterior_gif():
     for frame_path in state.history_frames:
         # frame_path is like "/history/frame_1.png"; resolve under dashboard/ for static mount
         rel = frame_path.lstrip("/")
-        full_path = Path("dashboard") / rel
+        full_path = Path("cosmic_dashboard/frontend") / rel
         if full_path.exists():
             try:
                 images.append(Image.open(full_path))
@@ -7107,7 +7704,7 @@ async def download_posterior_gif():
     if not images:
         raise HTTPException(status_code=404, detail="No evolution frame PNG files found.")
 
-    gif_out = Path("dashboard/history_movie.gif")
+    gif_out = Path("cosmic_dashboard/frontend/history_movie.gif")
     images[0].save(
         gif_out,
         save_all=True,
@@ -7641,6 +8238,7 @@ class TemplateSaveRequest(BaseModel):
 
 class TemplateLoadRequest(BaseModel):
     name: str
+    yaml_content: Optional[str] = None
 
 @app.get("/api/templates/list")
 async def list_templates():
@@ -7813,18 +8411,42 @@ async def save_template(req: TemplateSaveRequest):
 
 @app.post("/api/templates/load")
 async def load_template(req: TemplateLoadRequest):
-    templates_dir = Path("templates")
-    clean_name = re.sub(r'[^a-zA-Z0-9_\-]', '', req.name)
-    template_path = templates_dir / f"{clean_name}.yaml"
+    # If yaml_content is provided, use it directly (for CosmicForge configs)
+    if req.yaml_content:
+        target_path = Path("uploaded_config.yaml")
+        try:
+            # yaml_content might be a path to a file (relative to repo root)
+            source_path = Path("/home/themilkmanj/prtoe_class") / req.yaml_content
+            if source_path.exists():
+                shutil.copy2(source_path, target_path)
+                content = source_path.read_text()
+            else:
+                # Try relative to current working directory
+                source_path = Path(req.yaml_content)
+                if source_path.exists():
+                    shutil.copy2(source_path, target_path)
+                    content = source_path.read_text()
+                else:
+                    # It's actual YAML content
+                    target_path.write_text(req.yaml_content)
+                    content = req.yaml_content
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to load CosmicForge config: {e}")
+    else:
+        # Original behavior: load from templates directory
+        templates_dir = Path("templates")
+        clean_name = re.sub(r'[^a-zA-Z0-9_\-]', '', req.name)
+        template_path = templates_dir / f"{clean_name}.yaml"
 
-    if not template_path.exists():
-        raise HTTPException(status_code=404, detail=f"Template '{req.name}' not found.")
+        if not template_path.exists():
+            raise HTTPException(status_code=404, detail=f"Template '{req.name}' not found.")
 
-    target_path = Path("uploaded_config.yaml")
-    try:
-        shutil.copy2(template_path, target_path)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to load template into uploaded_config.yaml: {e}")
+        target_path = Path("uploaded_config.yaml")
+        try:
+            shutil.copy2(template_path, target_path)
+            content = template_path.read_text()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to load template into uploaded_config.yaml: {e}")
 
     # Ensure CLASS/Cobaya/PolyChord happy on template load too (names, base, halofit)
     try:
@@ -8698,18 +9320,41 @@ async def set_tunnel_url(req: TunnelUrlRequest):
 # The frontend can call this from a modal when it gets 401 on API calls.
 # Basic Auth still works in parallel for curl/API users.
 @app.post("/api/login")
-async def api_login(req: LoginRequest, response: FastAPIResponse):
+async def api_login(req: LoginRequest, response: FastAPIResponse, request: Request):
     """Login with username/password. On success sets 'dashboard_session' cookie."""
     req_user = os.environ.get("DASHBOARD_USER", "admin")
     req_pass = os.environ.get("DASHBOARD_PASS", "")
     if not req_pass:
         raise HTTPException(status_code=500, detail="Server auth misconfigured (no DASHBOARD_PASS).")
+    
+    # Apply failed login rate limiting
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    
+    if client_ip in FAILED_LOGIN_ATTEMPTS:
+        count, lock_until = FAILED_LOGIN_ATTEMPTS[client_ip]
+        if lock_until > now:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many failed login attempts. Please try again later.",
+            )
+    
     if not (secrets.compare_digest(req.username, req_user) and secrets.compare_digest(req.password, req_pass)):
-        # Apply the existing failed login rate limit logic for basic-like attempts
-        # (reuse some state from authenticate if possible; simplified here)
-        client_ip = "login"  # could enhance with request.client
-        # For brevity, just reject
+        # Increment failed attempts - only set lockout after threshold
+        count, lock_until = FAILED_LOGIN_ATTEMPTS.get(client_ip, (0, 0.0))
+        count += 1
+        if count >= 5:
+            lock_until = now + 300  # 5 minute lockout after 5 failures
+        else:
+            # For early failures, don't set a blocking lock_until - just track count
+            lock_until = 0.0
+        FAILED_LOGIN_ATTEMPTS[client_ip] = (count, lock_until)
+        _save_json_store(Path("chains/dashboard_failed_logins.json"), FAILED_LOGIN_ATTEMPTS)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
+    
+    # Clear failed attempts on successful login
+    FAILED_LOGIN_ATTEMPTS.pop(client_ip, None)
+    _save_json_store(Path("chains/dashboard_failed_logins.json"), FAILED_LOGIN_ATTEMPTS)
 
     token = secrets.token_urlsafe(32)
     duration = 30 * 24 * 3600 if req.remember_me else 8 * 3600  # remember or session
@@ -8908,8 +9553,8 @@ async def config_restore(req: ConfigRestoreRequest, request: Request = None):
     }
 
 # --- Serve Dashboard UI ---
-if Path("dashboard").exists():
-    app.mount("/", StaticFiles(directory="dashboard", html=True), name="dashboard")
+if Path("cosmic_dashboard/frontend").exists():
+    app.mount("/", StaticFiles(directory="cosmic_dashboard/frontend", html=True), name="dashboard")
 
 # Optional mount for user-provided real screenshots/videos (public assets, no auth)
 # Used for optional cool preview embeds inside upload zone + README gallery links.

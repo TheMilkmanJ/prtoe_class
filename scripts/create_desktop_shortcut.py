@@ -3,8 +3,9 @@ import sys
 import shutil
 from pathlib import Path
 
-# Paths
-project_dir = Path("/home/themilkmanj/prtoe_class")
+# Paths - use script directory as base
+script_dir = Path(__file__).parent.resolve()
+project_dir = script_dir.parent
 assets_dir = project_dir / "dashboard" / "assets"
 assets_dir.mkdir(parents=True, exist_ok=True)
 
@@ -13,9 +14,11 @@ dest_png = assets_dir / "galaxy_icon.png"
 
 # 1. Create Windows Desktop Shortcut (.url file)
 # WSL maps the C drive to /mnt/c
-windows_desktop = Path("/mnt/c/Users/themi/OneDrive/Desktop")
+# Get Windows username from environment or default to current user
+windows_user = os.environ.get("USERNAME", "themi")
+windows_desktop = Path(f"/mnt/c/Users/{windows_user}/OneDrive/Desktop")
 if not windows_desktop.exists():
-    windows_desktop = Path("/mnt/c/Users/themi/Desktop")
+    windows_desktop = Path(f"/mnt/c/Users/{windows_user}/Desktop")
 if windows_desktop.exists():
     shortcut_path = windows_desktop / "CosmicDashboard.url"
     
@@ -28,7 +31,7 @@ if windows_desktop.exists():
         print(f"Copied icon to Windows directory: {local_win_ico}")
         
         # Windows-style local path for the shortcut IconFile field
-        windows_icon_path = r"C:\Users\themi\OneDrive\Desktop\CosmicDashboardAssets\galaxy_icon_v3.ico"
+        windows_icon_path = rf"C:\Users\{windows_user}\OneDrive\Desktop\CosmicDashboardAssets\galaxy_icon_v3.ico"
         
         url_content = f"""[InternetShortcut]
 URL=http://localhost:8000/
