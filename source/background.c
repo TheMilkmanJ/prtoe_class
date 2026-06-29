@@ -596,6 +596,28 @@ int background_functions(
     pvecback[pba->index_bg_F_phiphi_prtoe] = F_phiphi;
     pvecback[pba->index_bg_F_phiphiphi_prtoe] = F_phiphiphi;
 
+    /* Compute phi_primeprime from Klein-Gordon equation (spec Section 2.2) */
+    /* φ'' (1 - F_φ/F) + 2H φ' + a² V_φ - F_φφ/F φ'² = (3 F_φ / 2F) (φ'²/a² - a² R / 3) */
+    /* So: φ'' = [ -2H φ' - a² V_φ + F_φφ/F φ'² + (3 F_φ / 2F) (φ'²/a² - a² R / 3) ] / (1 - F_φ/F) */
+    double V_phi = -pba->lambda_prtoe * pba->V0_prtoe * exp(-pba->lambda_prtoe * phi) + pba->m_prtoe * pba->m_prtoe * phi;
+    double kg_denom = 1.0 - F_phi / F;
+    double phi_primeprime_bg;
+    
+    if (fabs(kg_denom) > 1e-20) {
+      phi_primeprime_bg = (-2.0 * a_prime_over_a * phi_prime 
+                           - a2 * V_phi 
+                           + (F_phiphi / F) * phi_prime * phi_prime
+                           + (3.0 * F_phi / (2.0 * F)) * (phi_prime * phi_prime / a2 - a2 * pba->R_curvature / 3.0))
+                          / kg_denom;
+    } else {
+      /* If denominator is zero, use the old background_derivs result or set to zero */
+      phi_primeprime_bg = 0.0;
+      fprintf(stderr, "PRTOE WARNING: kg_denom near zero (%.6e) at a=%.6e, phi=%.6e\n", kg_denom, a, phi);
+    }
+    
+    /* Store phi_primeprime in background vector */
+    pvecback[pba->index_bg_ddphi_prtoe] = phi_primeprime_bg;
+
     /* Stability quantities */
     double V_phiphi = pba->lambda_prtoe * pba->lambda_prtoe * pba->V0_prtoe * exp(-pba->lambda_prtoe * phi) 
                     + pba->m_prtoe * pba->m_prtoe;

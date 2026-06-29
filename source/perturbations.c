@@ -9566,6 +9566,7 @@ int perturbations_derivs(double tau,
         /* Get background quantities */
         double phi_bg = ppw->pvecback[pba->index_bg_phi_prtoe];
         double phi_prime_bg = ppw->pvecback[pba->index_bg_dphi_prtoe];
+        double phi_primeprime_bg = ppw->pvecback[pba->index_bg_ddphi_prtoe];
         double V_phiphi = ppw->pvecback[pba->index_bg_ddV_scf];
         double F = ppw->pvecback[pba->index_bg_F_prtoe];
         double F_phi = ppw->pvecback[pba->index_bg_F_phi_prtoe];
@@ -9577,10 +9578,16 @@ int perturbations_derivs(double tau,
         double Phi = ppw->pvecmetric[ppw->index_mt_phi];
         double Phi_prime = ppw->pvecmetric[ppw->index_mt_phi_prime];
         
-        /* Compute delta_R (linearized Ricci scalar) */
-        /* For now, use simplified version; full expression requires Psi'' */
+        /* Background quantities for delta_R */
+        double H_prime = ppw->pvecback[pba->index_bg_H_prime];
+        double a_primeprime_over_a = H * H + H_prime; /* a''/a = H² + H' where H' is conformal derivative */
+        
+        /* Compute delta_R (linearized Ricci scalar) from spec Section 3.1 */
         /* δR = -6a⁻²[Ψ'' + 4aHΨ' + (a''/a + 2aH²)Φ + (1/3)k²(Ψ-Φ)] */
-        double delta_R = -6.0 * (k2/3.0 * (Psi - Phi)) / a2;
+        /* Currently missing: Ψ'' and Ψ' terms */
+        double delta_R = -6.0 * ( (a_primeprime_over_a + 2.0 * a_prime_over_a * a_prime_over_a) * Phi 
+                               + k2/3.0 * (Psi - Phi) ) / a2;
+        /* TODO: Add Ψ'' + 4*a_prime_over_a*Psi_prime when Psi_prime available */
         
         /* PRTOE perturbed Klein-Gordon equation from spec Section 3.1 */
         /* δφ'' + 2H(1 + F_φ φ₀'/2F) δφ' */
@@ -9597,18 +9604,22 @@ int perturbations_derivs(double tau,
         /* Coefficient of δφ' */
         double coeff_phi_prime = -2.0 * a_prime_over_a * (1.0 + F_phi * phi_prime_bg / (2.0 * F));
         
-        /* Coefficient of δφ (simplified - missing φ₀'' term) */
-        double coeff_phi = - (k2 + a2 * V_phiphi + F_phiphi / F * phi_prime_bg * phi_prime_bg);
+        /* Coefficient of δφ from spec Section 3.1 */
+        /* + [k² + a² V_φφ - F_φ/F (φ₀'' + 2H φ₀') + F_φφ/F φ₀'²] */
+        double coeff_phi = - (k2 + a2 * V_phiphi 
+                            - (F_phi / F) * (phi_primeprime_bg + 2.0 * a_prime_over_a * phi_prime_bg)
+                            + F_phiphi / F * phi_prime_bg * phi_prime_bg);
         
         /* Source terms from spec Section 3.1 */
-        double source = - phi_prime_bg * (3.0 * Phi_prime)  /* -φ₀' (3Φ') - TODO: add Psi' */
+        /* -φ₀' (Ψ' + 3Φ') */
+        double source = - phi_prime_bg * (3.0 * Phi_prime)  /* -φ₀' * 3Φ' */
                       + F_phi / (2.0 * F) * (phi_prime_bg * phi_prime_bg * (Psi - 3.0 * Phi) - a2 * delta_R)
                       + F_phiphi * phi_prime_bg / F * (delta_phi_prime - phi_prime_bg * Phi)
                       + F_phiphiphi * phi_prime_bg * phi_prime_bg / (2.0 * F) * delta_phi; /* F_φφφ φ₀'²/(2F) δφ */
         
-        /* TODO: Add terms requiring φ₀'' and Ψ' to coeff_phi and source */
-        /* coeff_phi missing: -F_φ/F (φ₀'' + 2H φ₀') */
-        /* source missing: -φ₀' Ψ' */
+        /* TODO: Add -φ₀' Ψ' term to source */
+        /* Psi_prime = dy[ppw->pv->index_pt_phi] - 4.5 * d/dτ[(a2/k2) * rho_plus_p_shear * G_eff_metric] */
+        /* Requires access to dy[ppw->pv->index_pt_phi] which is not available in this context */
         
         dy[pv->index_pt_ddelta_phi] = coeff_phi_prime * delta_phi_prime + coeff_phi * delta_phi + source;
     }
