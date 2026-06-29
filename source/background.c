@@ -570,7 +570,7 @@ int background_functions(
      * regardless of parameterization.
      */
     double rho_phi_candidate = 0.5 * phi_dot * phi_dot + V;  // Would-be scalar field density
-    double rho_r = pvecback[pba->index_bg_rho_g] + (pba->has_ur ? pvecback[pba->index_bg_rho_ur] : 0.0) + pvecback[pba->index_bg_rho_nu];
+    double rho_r = pvecback[pba->index_bg_rho_g] + (pba->has_ur ? pvecback[pba->index_bg_rho_ur] : 0.0);
     
     /* Activate when scalar field energy density exceeds a fraction of radiation density
      * This is covariant and happens at the same physical epoch regardless of 
@@ -762,7 +762,7 @@ int background_functions(
      * Recompute using the same physical criterion for consistency
      */
     double rho_phi_candidate = 0.5 * phi_dot * phi_dot + V;  // Would-be scalar field density
-    double rho_r = pvecback[pba->index_bg_rho_g] + (pba->has_ur ? pvecback[pba->index_bg_rho_ur] : 0.0) + pvecback[pba->index_bg_rho_nu];
+    double rho_r = pvecback[pba->index_bg_rho_g] + (pba->has_ur ? pvecback[pba->index_bg_rho_ur] : 0.0);
     double activation_threshold = 0.01;  // Activate when rho_phi > 1% of rho_r
     double ratio = (rho_r > 1e-100) ? rho_phi_candidate / rho_r : 0.0;
     double width_trans = 0.1;  // Width in log(ratio)
@@ -3026,7 +3026,11 @@ int background_derivs(
     double phi_dot = dphi / a;
     double V = pba->V0_prtoe * exp(-pba->lambda_prtoe * phi) + 0.5 * pba->m_prtoe * pba->m_prtoe * phi * phi;
     double rho_phi_candidate = 0.5 * phi_dot * phi_dot + V;  // Would-be scalar field density
-    double rho_r = y[pba->index_bi_rho_g] + (pba->has_ur ? y[pba->index_bi_rho_ur] : 0.0) + y[pba->index_bi_rho_nu];
+    /* Compute radiation density from scale factor (rho_r = rho_g + rho_ur) */
+    double rho_r = pba->Omega0_g * pow(pba->H0,2) / pow(a,4);
+    if (pba->has_ur == _TRUE_) {
+        rho_r += pba->Omega0_ur * pow(pba->H0,2) / pow(a,4);
+    }
     double activation_threshold = 0.01;  // Activate when rho_phi > 1% of rho_r
     double ratio = (rho_r > 1e-100) ? rho_phi_candidate / rho_r : 0.0;
     double width_trans = 0.1;  // Width in log(ratio)
@@ -3058,7 +3062,7 @@ int background_derivs(
     double F = pvecback[pba->index_bg_F_prtoe];
     double F_phi = pvecback[pba->index_bg_F_phi_prtoe];
     double F_phiphi = pvecback[pba->index_bg_F_phiphi_prtoe];
-    double phi_dot = dphi / a;  /* dphi/dt = phi_prime / a */
+    /* phi_dot already defined above (line 3026): double phi_dot = dphi / a; */
     
     /* Compute V_phi */
     double exp_term = exp(-pba->lambda_prtoe * phi);
@@ -3074,6 +3078,7 @@ int background_derivs(
     
     /* dy[pba->index_bi_dphi_prtoe] = dphi_prime/dloga = phi_primeprime */
     /* Use the activation from screening factor times transition for smoothness */
+    double screening_factor = 1.0 / (1.0 + pba->zeta_prtoe * phi * phi);
     double effective_activation = screening_factor * trans;
     dy[pba->index_bi_phi_prtoe]  = (dphi / a / MAX(H, 1e-20)) * effective_activation;
     dy[pba->index_bi_dphi_prtoe] = phi_primeprime * effective_activation;
