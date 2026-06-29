@@ -6610,10 +6610,30 @@ int perturbations_einstein(
   s2_squared = 1.-3.*pba->K/k2;
 
   double G_eff_metric = 1.0;
+  double delta_F = 0.0;
+  double delta_F_prime = 0.0;
+  
   if (pba->use_prtoe == _TRUE_) {
     /* Use the pre-computed F(phi) from background */
     double F = ppw->pvecback[pba->index_bg_F_prtoe];
+    double F_phi = ppw->pvecback[pba->index_bg_F_phi_prtoe];
+    double F_phiphi = ppw->pvecback[pba->index_bg_F_phiphi_prtoe];
+    
     G_eff_metric = 1.0 / F;
+    
+    /* Compute δF and δF' from delta_phi for use in Einstein equations */
+    /* Get delta_phi and delta_phi_prime from perturbation vector */
+    if (ppt->has_scalars == _TRUE_) {
+      double phi_prime_bg = ppw->pvecback[pba->index_bg_dphi_prtoe];
+      double delta_phi = y[ppt->pv->index_pt_delta_phi];
+      double delta_phi_prime = y[ppt->pv->index_pt_ddelta_phi];
+      
+      /* δF = F_φ δφ */
+      delta_F = F_phi * delta_phi;
+      
+      /* δF' = F_φφ φ₀' δφ + F_φ δφ' */
+      delta_F_prime = F_phiphi * phi_prime_bg * delta_phi + F_phi * delta_phi_prime;
+    }
   }
 
   /** - sum up perturbations from all species */
@@ -6645,7 +6665,8 @@ int perturbations_einstein(
       ppw->pvecmetric[ppw->index_mt_psi] = y[ppw->pv->index_pt_phi] - 4.5 * (a2/k2) * ppw->rho_plus_p_shear * G_eff_metric;
 
       /* equation for phi' */
-      ppw->pvecmetric[ppw->index_mt_phi_prime] = -a_prime_over_a * ppw->pvecmetric[ppw->index_mt_psi] + 1.5 * (a2/k2) * ppw->rho_plus_p_theta * G_eff_metric;
+      ppw->pvecmetric[ppw->index_mt_phi_prime] = -a_prime_over_a * ppw->pvecmetric[ppw->index_mt_psi] + 1.5 * (a2/k2) * ppw->rho_plus_p_theta * G_eff_metric
+        + (pba->use_prtoe ? (a2 / (2.0 * F) * delta_F_prime) : 0.0); /* PRTOE: δF' term from spec Section 3.2 0i */
 
       /* eventually, infer radiation streaming approximation for
          gamma and ur (this is exactly the right place to do it
