@@ -3415,6 +3415,8 @@ int input_read_parameters_species(struct file_content * pfc,
   class_read_double("beta_prtoe",   pba->beta_prtoe);
   class_read_double("lambda_prtoe", pba->lambda_prtoe);
   class_read_double("delta_prtoe",  pba->delta_prtoe);  /* allow explicit override too */
+  class_read_double("phi_c_prtoe",  pba->phi_c_prtoe);
+  class_read_double("delta_phi_prtoe", pba->delta_phi_prtoe);
 
   if (pba->use_prtoe == _TRUE_) {
     /* Scale V0 and m to CLASS internal units (H0-normalized) */
@@ -6340,6 +6342,8 @@ int input_default_params(struct background *pba,
   pba->delta_prtoe = 0.0;     /* delta screening: delta/(1+phi^2) */
   pba->alpha_prtoe = 0.1;     /* alpha screening: alpha^2/(1+phi^2) */
   pba->zeta_prtoe = 1.0;      /* Screening intensity scaling factor */
+  pba->phi_c_prtoe = 0.0;    /* Activation function center phi_c */
+  pba->delta_phi_prtoe = 0.1; /* Activation function width delta_phi */
 
   return _SUCCESS_;
  }

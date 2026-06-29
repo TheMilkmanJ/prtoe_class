@@ -27,6 +27,22 @@
 #include "perturbations.h"
 #include "parallel.h"
 
+/**
+ * PRTOE helper function: Compute delta_F and derivatives for perturbation equations
+ * Based on PRTOE_Full_Implementation_Spec_v1.md Section 3.3
+ */
+static inline void prtoe_compute_delta_F(
+    double phi_prime, double phi_primeprime,
+    double F_phi, double F_phiphi, double F_phiphiphi,
+    double delta_phi, double delta_phi_prime, double delta_phi_primeprime,
+    double *delta_F, double *delta_F_prime, double *delta_F_primeprime
+) {
+  *delta_F = F_phi * delta_phi;
+  *delta_F_prime = F_phiphi * phi_prime * delta_phi + F_phi * delta_phi_prime;
+  *delta_F_primeprime = F_phiphiphi * (phi_prime*phi_prime) * delta_phi
+                    + F_phiphi * (phi_primeprime * delta_phi + 2*phi_prime*delta_phi_prime)
+                    + F_phi * delta_phi_primeprime;
+}
 
 /**
  * Source function \f$ S^{X} (k, \tau) \f$ at a given conformal time tau.

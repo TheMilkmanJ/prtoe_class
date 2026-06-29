@@ -560,6 +560,57 @@ int background_functions(
     rho_tot += rho_phi_fluid;
     p_tot   += p_phi_fluid;
 
+    /* PRTOE: Compute F(phi), F_phi, F_phiphi and stability quantities */
+    /* Activation function A(phi) */
+    double u = (phi - pba->phi_c_prtoe) / pba->delta_phi_prtoe;
+    double tanh_u = tanh(u);
+    double sech2_u = 1.0 - tanh_u * tanh_u;
+    double A = 0.5 * (1.0 + tanh_u);
+    double A_prime = sech2_u / (2.0 * pba->delta_phi_prtoe);
+    double A_primeprime = - (sech2_u * tanh_u) / (pba->delta_phi_prtoe * pba->delta_phi_prtoe);
+
+    /* Screening function S(phi) */
+    double phi2 = phi * phi;
+    double denom = 1.0 + pba->zeta_prtoe * phi2;
+    double S = phi2 / denom;
+    double S_prime = 2.0 * phi / (denom * denom);
+    double S_primeprime = (2.0 - 6.0 * pba->zeta_prtoe * phi2) / (denom * denom * denom);
+
+    /* Combined coupling function f = A * S */
+    double f = A * S;
+    double f_prime = A_prime * S + A * S_prime;
+    double f_primeprime = A_primeprime * S + 2.0 * A_prime * S_prime + A * S_primeprime;
+
+    /* Final F and derivatives */
+    double F = 1.0 + pba->xi_prtoe * f;
+    double F_phi = pba->xi_prtoe * f_prime;
+    double F_phiphi = pba->xi_prtoe * f_primeprime;
+
+    /* Store in background vector */
+    pvecback[pba->index_bg_F_prtoe] = F;
+    pvecback[pba->index_bg_F_phi_prtoe] = F_phi;
+    pvecback[pba->index_bg_F_phiphi_prtoe] = F_phiphi;
+
+    /* Stability quantities */
+    double V_phiphi = pba->lambda_prtoe * pba->lambda_prtoe * pba->V0_prtoe * exp(-pba->lambda_prtoe * phi) 
+                    + pba->m_prtoe * pba->m_prtoe;
+    double meff2 = V_phiphi 
+                 + (F_phi / F) * (pba->R_curvature / 2.0 - 3.0 * H * H - phi_primeprime / (a*a))
+                 - (F_phiphi / F) * (phi_prime * phi_prime / (a*a));
+    pvecback[pba->index_bg_meff2_prtoe] = meff2;
+
+    /* Approximate sound speed squared */
+    double cs2_approx = 1.0;
+    pvecback[pba->index_bg_cs2_prtoe] = cs2_approx;
+
+    /* Stability Warnings */
+    if (F <= 0.0) {
+      fprintf(stderr, "PRTOE WARNING: Ghost instability! F = %.6e at a = %.6e\n", F, a);
+    }
+    if (meff2 < 0.0) {
+      fprintf(stderr, "PRTOE WARNING: Tachyonic instability! m_eff^2 = %.6e at a = %.6e\n", meff2, a);
+    }
+
     /* Effective Friedmann Equation will be computed at the end of the function */
 
   } else if (pba->has_scf == _TRUE_) { // Original PRTOE scalar field logic
@@ -1167,6 +1218,11 @@ int background_indices(
   class_define_index(pba->index_bg_p_prtoe, pba->use_prtoe, index_bg, 1);
   class_define_index(pba->index_bg_rho_dark_energy, pba->use_prtoe, index_bg, 1);
   class_define_index(pba->index_bg_p_dark_energy, pba->use_prtoe, index_bg, 1);
+  class_define_index(pba->index_bg_F_prtoe, pba->use_prtoe, index_bg, 1);
+  class_define_index(pba->index_bg_F_phi_prtoe, pba->use_prtoe, index_bg, 1);
+  class_define_index(pba->index_bg_F_phiphi_prtoe, pba->use_prtoe, index_bg, 1);
+  class_define_index(pba->index_bg_meff2_prtoe, pba->use_prtoe, index_bg, 1);
+  class_define_index(pba->index_bg_cs2_prtoe, pba->use_prtoe, index_bg, 1);
 
   /* - indices for scalar field */
   class_define_index(pba->index_bg_phi_scf,pba->has_scf,index_bg,1);

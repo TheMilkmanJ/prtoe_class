@@ -129,6 +129,8 @@ struct background
   double alpha_prtoe;   /**< Interaction coupling alpha; screened as alpha^2/(1+phi^2) */
   double M_ew_prtoe;    /**< Electroweak scale M_EW (default 100 GeV in natural units) */
   double H_vac_floor;   /**< Baseline vacuum expansion floor in km/s/Mpc */
+  double phi_c_prtoe;    /**< Activation function center phi_c */
+  double delta_phi_prtoe; /**< Activation function width delta_phi */
   double g_b_prtoe;     /**< Baryonic field coupling multiplier */
   double sigma_prtoe;   /**< PRTOE Displacement coupling sigma */
   double rho0_prtoe;    /**< PRTOE Reference density rho_0 */
@@ -155,6 +157,11 @@ struct background
   int index_bg_p_prtoe;     /**< Pressure of the PRTOE fluid */
   int index_bg_rho_dark_energy;
   int index_bg_p_dark_energy;
+  int index_bg_F_prtoe;     /**< F(phi) = 1 + xi * A(phi) * S(phi) */
+  int index_bg_F_phi_prtoe; /**< dF/dphi */
+  int index_bg_F_phiphi_prtoe; /**< d²F/dphi² */
+  int index_bg_meff2_prtoe; /**< Effective mass squared for stability */
+  int index_bg_cs2_prtoe;   /**< Approximate scalar sound speed squared */
 
   /* Integration indices for the PRTOE ODE solver (index_bi) */
   int index_bi_phi_prtoe;    /**< Field value in integration vector */
