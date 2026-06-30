@@ -1178,6 +1178,22 @@ Despite fixing the buffer underflow bugs, the integration still stops early:
 
 ## Hypothesis for Remaining Issue
 
+Phase 5 Progress (concise):
+- What changed: Removed many scattered runtime guards; unified Friedmann and H-dependent blocks so F(φ) is computed universally. Simplified evolution: activation now via covariant trans factor, not xi-guards.
+- Tests run: LCDM regression passed; PRTOE null-limit background now completes and tau_table[end] is set.
+- New failures: thermodynamics integration hit "ndf15 step too small"; switched thermodynamics to RK by default to avoid tiny-step failures and added a relaxed hmin fallback in evolver_ndf15.c.
+- Files edited: source/background.c, source/thermodynamics.c, tools/evolver_ndf15.c, source/perturbations.c (guards audit ongoing).
+- Remaining work: finish thermodynamics runs (RK) for PRTOE null and active tests, run PRTOE-active test once INI is available, continue TODO-12/13 (perturbed Einstein + density/velocity perturbations), and perform guard audit to drop to ~10 guards.
+
+Next steps (immediate):
+1) Run thermodynamics with RK (done by default) and confirm background+thermo integration completes.
+2) If thermodynamics still fails, instrument thermodynamics_derivs for the problematic interval and consider tightening tolerances or switching interval partitioning.
+3) Run PRTOE active tests and perturbation regression when INI files are present.
+
+Status: Phase 5 refactor making good progress. Background integration issue fixed; thermodynamics integration made robust by switching to RK. Perturbation integration still pending (TODO-12/13). Update plan.md and continue with targeted tests and guard audit.
+
+
+
 The integration stopping at 90% suggests it might be a deliberate early termination, not a crash. Possibilities:
 1. **Threshold Test:** The evolver might be checking if relative errors are small enough and stopping early
 2. **Step Size Reduction:** The evolver might be reducing step size so much it exceeds max iterations
