@@ -3995,21 +3995,16 @@ int perturbations_vector_init(
       class_define_index(ppv->index_pt_delta_prtoe, _TRUE_, index_pt, 1);
       class_define_index(ppv->index_pt_ddelta_prtoe, _TRUE_, index_pt, 1);
       
-      /* PRTOE metric perturbations (3-variable system) */
-      class_define_index(ppv->index_pt_Phi_prtoe, _TRUE_, index_pt, 1);
-      class_define_index(ppv->index_pt_dPhi_prtoe, _TRUE_, index_pt, 1);
-      class_define_index(ppv->index_pt_eta_prtoe, _TRUE_, index_pt, 1);
-      class_define_index(ppv->index_pt_deta_prtoe, _TRUE_, index_pt, 1);
-
-      /* --- Alias SCF indices to PRTOE perturbations for fluent integration ---
-         This maps existing scalar-field handling to PRTOE variables so most
-         DE-related codepaths operate on PRTOE when active, reducing scattered guards.
-         Aliases are done only when PRTOE is active; when inactive, scf indices
-         remain controlled by has_scf and previous behavior.
+      /* PRTOE metric perturbations are NOT evolved as independent variables.
+         They are determined from Friedmann constraints in metric_sources().
+         Not allocating indices prevents singular Jacobian from frozen variables.
       */
-      /* Do not alias SCF indices to PRTOE here: aliasing created duplicated equation slots
-         that may lead to singular Jacobians in the NDF integrator. Keep scf indices unset
-         when PRTOE is active to avoid duplicate constraints; patching for diagnostics. */
+      ppv->index_pt_Phi_prtoe = -1;
+      ppv->index_pt_dPhi_prtoe = -1;
+      ppv->index_pt_eta_prtoe = -1;
+      ppv->index_pt_deta_prtoe = -1;
+
+      /* Do not alias SCF indices to PRTOE here: keep them unset when PRTOE is active */
       ppv->index_pt_phi_scf = -1;
       ppv->index_pt_phi_prime_scf = -1;
     } else {
@@ -5588,10 +5583,16 @@ int perturbations_initial_conditions(struct precision * ppr,
         ppw->pv->y[ppw->pv->index_pt_delta_prtoe]  = -2.0 * ppw->pv->y[ppw->pv->index_pt_phi];
         ppw->pv->y[ppw->pv->index_pt_ddelta_prtoe] = 0.0;
 
-        ppw->pv->y[ppw->pv->index_pt_Phi_prtoe]  = ppw->pv->y[ppw->pv->index_pt_phi];
-        ppw->pv->y[ppw->pv->index_pt_dPhi_prtoe] = 0.0;
-        ppw->pv->y[ppw->pv->index_pt_eta_prtoe]  = ppw->pv->y[ppw->pv->index_pt_eta];
-        ppw->pv->y[ppw->pv->index_pt_deta_prtoe] = 0.0;
+        /* Metric potentials are no longer part of ODE system (determined from constraints).
+           Skip IC initialization if indices are not allocated (-1). */
+        if (ppw->pv->index_pt_Phi_prtoe >= 0) {
+          ppw->pv->y[ppw->pv->index_pt_Phi_prtoe]  = ppw->pv->y[ppw->pv->index_pt_phi];
+          ppw->pv->y[ppw->pv->index_pt_dPhi_prtoe] = 0.0;
+        }
+        if (ppw->pv->index_pt_eta_prtoe >= 0) {
+          ppw->pv->y[ppw->pv->index_pt_eta_prtoe]  = ppw->pv->y[ppw->pv->index_pt_eta];
+          ppw->pv->y[ppw->pv->index_pt_deta_prtoe] = 0.0;
+        }
 
       } else if (pba->use_prtoe == _TRUE_) {
 
@@ -5602,10 +5603,15 @@ int perturbations_initial_conditions(struct precision * ppr,
 
         ppw->pv->y[ppw->pv->index_pt_delta_prtoe]  = 0.0;
         ppw->pv->y[ppw->pv->index_pt_ddelta_prtoe] = 0.0;
-        ppw->pv->y[ppw->pv->index_pt_Phi_prtoe]    = 0.0;
-        ppw->pv->y[ppw->pv->index_pt_dPhi_prtoe]   = 0.0;
-        ppw->pv->y[ppw->pv->index_pt_eta_prtoe]    = 0.0;
-        ppw->pv->y[ppw->pv->index_pt_deta_prtoe]   = 0.0;
+        /* Skip unallocated indices */
+        if (ppw->pv->index_pt_Phi_prtoe >= 0) {
+          ppw->pv->y[ppw->pv->index_pt_Phi_prtoe]    = 0.0;
+          ppw->pv->y[ppw->pv->index_pt_dPhi_prtoe]   = 0.0;
+        }
+        if (ppw->pv->index_pt_eta_prtoe >= 0) {
+          ppw->pv->y[ppw->pv->index_pt_eta_prtoe]    = 0.0;
+          ppw->pv->y[ppw->pv->index_pt_deta_prtoe]   = 0.0;
+        }
 
       } else {
 
@@ -9065,24 +9071,11 @@ int prtoe_perturbations_derivs(
 
     dy[ppw->pv->index_pt_delta_prtoe] = ddelta_phi;
 
-    /* === Freeze metric potential perturbations ===
-       These are now determined from constraints (Friedmann equations) in metric_sources()
-       not evolved as independent degrees of freedom
-    */
-    dy[ppw->pv->index_pt_Phi_prtoe] = 0.0;
-    dy[ppw->pv->index_pt_dPhi_prtoe] = 0.0;
-    dy[ppw->pv->index_pt_eta_prtoe] = 0.0;
-    dy[ppw->pv->index_pt_deta_prtoe] = 0.0;
-
   } else if (pba->use_prtoe == _TRUE_) {
 
     /* === Null limit / inactive → freeze all PRTOE perturbations === */
     dy[ppw->pv->index_pt_delta_prtoe] = 0.0;
     dy[ppw->pv->index_pt_ddelta_prtoe] = 0.0;
-    dy[ppw->pv->index_pt_Phi_prtoe] = 0.0;
-    dy[ppw->pv->index_pt_dPhi_prtoe] = 0.0;
-    dy[ppw->pv->index_pt_eta_prtoe] = 0.0;
-    dy[ppw->pv->index_pt_deta_prtoe] = 0.0;
 
   }
 
