@@ -1644,7 +1644,8 @@ int perturbations_timesampling_for_sources(
 
     /* For PRTOE, allow sources to start when field approaches activation threshold */
     double prtoe_source_condition = _FALSE_;
-    if (pba->use_prtoe == _TRUE_ && pba->xi_prtoe > 1e-8 && pba->Omega0_prtoe > 0.0) {
+    /* Use de_mode to decide whether PRTOE source activation is relevant */
+    if (pba->de_mode == prtoe_active) {
       double phi = pvecback[pba->index_bg_phi_prtoe];
       prtoe_source_condition = (phi > pba->phi_c_prtoe * 0.1);
     }
@@ -1653,7 +1654,7 @@ int perturbations_timesampling_for_sources(
                 pvecback[pba->index_bg_H]/
                 pvecthermo[pth->index_th_dkappa] >
                 ppr->start_sources_at_tau_c_over_tau_h) && 
-               (prtoe_source_condition == _FALSE_) && pba->xi_prtoe > 1e-8 && pba->Omega0_prtoe > 0.0,
+               (prtoe_source_condition == _FALSE_) && pba->de_mode == prtoe_active,
                ppt->error_message,
                "your choice of initial time for computing sources is inappropriate: it corresponds to an earlier time than the one at which the integration of thermodynamical variables started (tau=%g). You should increase either 'start_sources_at_tau_c_over_tau_h' or 'recfast_z_initial'\n",
                tau_lower);
@@ -5574,7 +5575,7 @@ int perturbations_initial_conditions(struct precision * ppr,
        * we explicitly freeze every PRTOE perturbation variable to zero.
        * This guarantees zero impact on standard CLASS runs.
        * ============================================================ */
-      if (pba->use_prtoe == _TRUE_ && pba->xi_prtoe > 1e-8 && pba->Omega0_prtoe > 0.0) {
+      if (pba->de_mode == prtoe_active) {
 
         /* PRTOE is physically active → set small adiabatic-like initial conditions */
         if (ppt->perturbations_verbose > 2) {
@@ -6756,7 +6757,7 @@ int perturbations_einstein(
       ppw->pvecmetric[ppw->index_mt_psi] = Phi - 4.5 * (a2/k2) * ppw->rho_plus_p_shear * G_eff_metric;
       
       /* Add PRTOE δF contributions to psi (unified threshold) */
-      if (pba->use_prtoe == _TRUE_ && pba->xi_prtoe > 1e-8 && pba->Omega0_prtoe > 0.0 && fabs(F) > 1e-30) {
+      if (pba->de_mode == prtoe_active && fabs(F) > 1e-30) {
         ppw->pvecmetric[ppw->index_mt_psi] -= 0.5 * a2 / F * (3.0 * a_prime_over_a * delta_F_prime - k2 * delta_F) / k2;
       }
 
@@ -6764,7 +6765,7 @@ int perturbations_einstein(
       ppw->pvecmetric[ppw->index_mt_phi_prime] = -a_prime_over_a * ppw->pvecmetric[ppw->index_mt_psi] + 1.5 * (a2/k2) * ppw->rho_plus_p_theta * G_eff_metric;
       
       /* Add PRTOE δF' contributions to phi_prime (unified threshold) */
-      if (pba->use_prtoe == _TRUE_ && pba->xi_prtoe > 1e-8 && pba->Omega0_prtoe > 0.0 && fabs(F) > 1e-30) {
+      if (pba->de_mode == prtoe_active && fabs(F) > 1e-30) {
         ppw->pvecmetric[ppw->index_mt_phi_prime] += a2 / (2.0 * F) * delta_F_prime + a2 / (2.0 * F * F) * F_phiphiphi * phi_prime_bg * phi_primeprime_bg * delta_phi;
       }
 
@@ -6796,7 +6797,7 @@ int perturbations_einstein(
         / (0.5*a_prime_over_a);  /* h' */
       
       /* Add PRTOE δF contributions to h_prime (unified threshold) */
-      if (pba->use_prtoe == _TRUE_ && pba->xi_prtoe > 1e-8 && pba->Omega0_prtoe > 0.0 && fabs(F) > 1e-30) {
+      if (pba->de_mode == prtoe_active && fabs(F) > 1e-30) {
         ppw->pvecmetric[ppw->index_mt_h_prime] -= 1.5 * a2 * (3.0 * a_prime_over_a * delta_F_prime - k2 * delta_F) / (F * 0.5*a_prime_over_a);
       }
 
@@ -6831,7 +6832,7 @@ int perturbations_einstein(
         - 9. * a2 * ppw->delta_p * G_eff_metric;
       
       /* Add PRTOE δF contributions to h'' (unified threshold) */
-      if (pba->use_prtoe == _TRUE_ && pba->xi_prtoe > 1e-8 && pba->Omega0_prtoe > 0.0 && fabs(F) > 1e-30) {
+      if (pba->de_mode == prtoe_active && fabs(F) > 1e-30) {
         ppw->pvecmetric[ppw->index_mt_h_prime_prime] += 0.5 * a2 / F * (delta_F_primeprime + 2.0 * a_prime_over_a * delta_F_prime - k2/3.0 * delta_F);
       }
 
@@ -7484,37 +7485,40 @@ int perturbations_total_stress_energy(
     /* PRTOE: Add δF contributions to anisotropic stress (ij-traceless Einstein equation) */
     /* From spec: (k² + 2H∂_τ)(Ψ-Φ) = a²/F[Π_total + δF'' + 2HδF' - k²/3 δF] + ... */
     /* The δF terms contribute to the effective anisotropic stress (pi_tot) */
-    if (pba->use_prtoe == _TRUE_ && ppt->has_scalars == _TRUE_) {
-      /* Get F and its derivatives from background */
-      double F_local = ppw->pvecback[pba->index_bg_F_prtoe];
-      double F_phi_local = ppw->pvecback[pba->index_bg_F_phi_prtoe];
-      double F_phiphi_local = ppw->pvecback[pba->index_bg_F_phiphi_prtoe];
-      double F_phiphiphi_local = ppw->pvecback[pba->index_bg_F_phiphiphi_prtoe];
-      double phi_prime_bg_local = ppw->pvecback[pba->index_bg_dphi_prtoe];
-      double phi_primeprime_bg_local = ppw->pvecback[pba->index_bg_ddphi_prtoe];
-      
-      /* Get delta_phi and its derivatives from perturbation vector */
-      double delta_phi = y[ppw->pv->index_pt_delta_prtoe];
-      double delta_phi_prime = y[ppw->pv->index_pt_ddelta_prtoe];
-      double delta_phi_primeprime = 0.0; /* Approximation: will be refined in future */
-      
-      /* Compute δF, δF', δF'' */
-      double delta_F_local = F_phi_local * delta_phi;
-      double delta_F_prime_local = F_phiphi_local * phi_prime_bg_local * delta_phi + F_phi_local * delta_phi_prime;
-      double delta_F_primeprime_local = F_phiphiphi_local * (phi_prime_bg_local * phi_prime_bg_local) * delta_phi
-                                      + F_phiphi_local * (phi_primeprime_bg_local * delta_phi + 2.0 * phi_prime_bg_local * delta_phi_prime)
-                                      + F_phi_local * delta_phi_primeprime;
-      
-      /* Add PRTOE-specific anisotropic stress contribution from δF terms */
-      /* This comes from the ij-traceless Einstein equation rearranged to solve for Π_total */
-      double a_local = ppw->pvecback[pba->index_bg_a];
-      double a2_local = a_local * a_local;
-      double a_prime_over_a_local = ppw->pvecback[pba->index_bg_H] * a_local;
-      double k2_local = k * k;
-      
-      if (pba->use_prtoe == _TRUE_ && pba->xi_prtoe > 1e-8 && pba->Omega0_prtoe > 0.0 && fabs(F_local) > 1e-30) {
-        /* Safe to divide by F_local and include PRTOE anisotropic-stress contribution */
-        ppw->rho_plus_p_shear += (a2_local / F_local) * (delta_F_primeprime_local + 2.0 * a_prime_over_a_local * delta_F_prime_local - (k2_local / 3.0) * delta_F_local);
+    if (ppt->has_scalars == _TRUE_ && pba->de_mode == prtoe_active) {
+      /* Ensure all required PRTOE indices are allocated before reading them */
+      if (pba->index_bg_F_prtoe >= 0 && pba->index_bg_F_phi_prtoe >= 0 && pba->index_bg_F_phiphi_prtoe >= 0 && pba->index_bg_F_phiphiphi_prtoe >= 0 && pba->index_bg_dphi_prtoe >= 0 && pba->index_bg_ddphi_prtoe >= 0) {
+        /* Get F and its derivatives from background */
+        double F_local = ppw->pvecback[pba->index_bg_F_prtoe];
+        double F_phi_local = ppw->pvecback[pba->index_bg_F_phi_prtoe];
+        double F_phiphi_local = ppw->pvecback[pba->index_bg_F_phiphi_prtoe];
+        double F_phiphiphi_local = ppw->pvecback[pba->index_bg_F_phiphiphi_prtoe];
+        double phi_prime_bg_local = ppw->pvecback[pba->index_bg_dphi_prtoe];
+        double phi_primeprime_bg_local = ppw->pvecback[pba->index_bg_ddphi_prtoe];
+
+        /* Get delta_phi and its derivatives from perturbation vector */
+        double delta_phi = y[ppw->pv->index_pt_delta_prtoe];
+        double delta_phi_prime = y[ppw->pv->index_pt_ddelta_prtoe];
+        double delta_phi_primeprime = 0.0; /* Approximation: will be refined in future */
+
+        /* Compute δF, δF', δF'' */
+        double delta_F_local = F_phi_local * delta_phi;
+        double delta_F_prime_local = F_phiphi_local * phi_prime_bg_local * delta_phi + F_phi_local * delta_phi_prime;
+        double delta_F_primeprime_local = F_phiphiphi_local * (phi_prime_bg_local * phi_prime_bg_local) * delta_phi
+                                        + F_phiphi_local * (phi_primeprime_bg_local * delta_phi + 2.0 * phi_prime_bg_local * delta_phi_prime)
+                                        + F_phi_local * delta_phi_primeprime;
+
+        /* Add PRTOE-specific anisotropic stress contribution from δF terms */
+        /* This comes from the ij-traceless Einstein equation rearranged to solve for Π_total */
+        double a_local = ppw->pvecback[pba->index_bg_a];
+        double a2_local = a_local * a_local;
+        double a_prime_over_a_local = ppw->pvecback[pba->index_bg_H] * a_local;
+        double k2_local = k * k;
+
+        if (fabs(F_local) > 1e-30) {
+          /* Safe to divide by F_local and include PRTOE anisotropic-stress contribution */
+          ppw->rho_plus_p_shear += (a2_local / F_local) * (delta_F_primeprime_local + 2.0 * a_prime_over_a_local * delta_F_prime_local - (k2_local / 3.0) * delta_F_local);
+        }
       }
     }
 
@@ -9016,7 +9020,7 @@ int prtoe_perturbations_derivs(
   double * pvecback = ppw->pvecback;
 
   /* PRTOE is only active when meaningfully configured */
-  if (pba->use_prtoe == _TRUE_ && pba->xi_prtoe > 1e-8 && pba->Omega0_prtoe > 0.0) {
+  if (pba->de_mode == prtoe_active) {
 
     /* ==== Diagnostic Hook ==== */
     /* Check for stiffness in PRTOE perturbations */
@@ -9356,7 +9360,7 @@ int perturbations_derivs(double tau,
   /** ============================================================
    *  PRTOE Safety Check (perturbations level)
    *  ============================================================ */
-  if (pba->use_prtoe == _TRUE_ && pba->xi_prtoe > 1e-8 && pba->Omega0_prtoe > 0.0) {
+  if (pba->de_mode == prtoe_active) {
     class_test(pv->index_pt_delta_prtoe < 0 || pv->index_pt_Phi_prtoe < 0,
                error_message,
                "PRTOE is active but perturbation indices were not allocated. "
@@ -9385,7 +9389,7 @@ int perturbations_derivs(double tau,
              error_message);
 
   /** - Pre-compute PRTOE effective gravity ratio (unified, once per timestep) */
-  if (pba->use_prtoe == _TRUE_ && pba->xi_prtoe > 1e-8 && pba->Omega0_prtoe > 0.0) {
+  if (pba->de_mode == prtoe_active) {
     double phi_current = pvecback[pba->index_bg_phi_prtoe];
     double xi = pba->xi_prtoe;
     double lambda = pba->lambda_prtoe;
