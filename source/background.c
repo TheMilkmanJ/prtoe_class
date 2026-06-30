@@ -3784,7 +3784,8 @@ int prtoe_normalize_phi0(struct background * pba) {
 
     /* Expand bracket if necessary (wider and more attempts) */
     int expand = 0;
-    while ((rho_low - target_rho) * (rho_high - target_rho) > 0.0 && expand < 30) {
+    /* Allow more expansion attempts in pathological cases */
+    while ((rho_low - target_rho) * (rho_high - target_rho) > 0.0 && expand < 100) {
         phi_low  -= 5.0;
         phi_high += 5.0;
         rho_low  = prtoe_rho_at_today_approx(pba, phi_low, V0, lambda, m);
@@ -3792,16 +3793,18 @@ int prtoe_normalize_phi0(struct background * pba) {
         expand++;
     }
 
-    /* Secant/Bisection hybrid with slightly relaxed tolerance */
+    /* Secant/Bisection hybrid with slightly relaxed tolerance and more iterations */
     double best_phi = 0.5 * (phi_low + phi_high);
     double best_diff = fabs(prtoe_rho_at_today_approx(pba, best_phi, V0, lambda, m) - target_rho);
 
-    for (int iter = 0; iter < 160; iter++) {
+    /* Increase iteration limit to improve chance of convergence in difficult parameter space */
+    for (int iter = 0; iter < 500; iter++) {
         double phi_mid = 0.5 * (phi_low + phi_high);
         double rho_mid = prtoe_rho_at_today_approx(pba, phi_mid, V0, lambda, m);
 
+        /* Relax relative error tolerance slightly to avoid over-precision for noisy approximations */
         double rel_err = fabs(rho_mid - target_rho) / MAX(target_rho, 1e-30);
-        if (rel_err < 1e-5) {
+        if (rel_err < 1e-4) {
             pba->phi_0_prtoe = phi_mid;
             return _SUCCESS_;
         }
@@ -3823,7 +3826,7 @@ int prtoe_normalize_phi0(struct background * pba) {
     }
 
     /* If not converged, fall back to best found value but do not abort initialization. */
-    fprintf(stderr, "WARNING: prtoe_normalize_phi0() did not converge to requested tolerance; using best-effort phi_0_prtoe (closest match).\n");
+    fprintf(stderr, "WARNING: prtoe_normalize_phi0() did not converge to requested tolerance after iterations; using best-effort phi_0_prtoe (closest match), best_diff=%g.\n", best_diff);
     pba->phi_0_prtoe = best_phi;
 
     return _SUCCESS_;
