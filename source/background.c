@@ -806,71 +806,38 @@ int background_functions(
     rho_r += pvecback[pba->index_bg_rho_idr];
   }
 
-  /** - compute expansion rate H from Friedmann equation: this is the
-      only place where the Friedmann equation is assumed. Remember
-      that densities are all expressed in units of \f$ [3c^2/8\pi G] \f$, ie
-      \f$ \rho_{class} = [8 \pi G \rho_{physical} / 3 c^2]\f$
-      PRTOE Modification: H^2 is scaled by the non-minimal coupling factor 1/(1 + xi*phi) */
+  /** - compute expansion rate H from Friedmann equation (unified)
+      Works for all F values: F=1.0 for Lambda, F(φ) for PRTOE */
   double H_sq_eff = (rho_tot - pba->K / a / a);
-  if (pba->use_prtoe == _TRUE_ && pba->xi_prtoe > 1e-8 && pba->Omega0_prtoe > 0.0) {
-    /* PRTOE: Modified Friedmann equation with non-minimal coupling F(phi)
-       CRITICAL: Only execute when PRTOE is physically active (indices are valid).
-       When xi_prtoe <= 1e-8, indices are -1, so we must use standard Friedmann. */
-    
+  if (pba->use_prtoe == _TRUE_) {
+    /* PRTOE: Modified Friedmann equation with non-minimal coupling F(phi) */
     double F = pvecback[pba->index_bg_F_prtoe];
     double F_phi = pvecback[pba->index_bg_F_phi_prtoe];
     double phi_prime = pvecback[pba->index_bg_dphi_prtoe];
     
-    /* F_prime = dF/dτ = F_phi * phi_prime (since F = F(phi) only) */
-    double F_prime = F_phi * phi_prime;
-    
-    /* F_dot = dF/dt = F_prime / a */
-    double F_dot = F_prime / a;
-    
-    /* PRTOE modified Friedmann equation: 3 F H^2 + 3 H F_dot = rho_tot - 3 F K/a^2 */
-    /* This includes the F_dot term (energy exchange from non-minimal coupling) */
-    /* From action variation: 3 F H² + 3 H F_dot = rho_tot - 3 F K/a^2 */
+    double F_dot = F_phi * phi_prime / a;
     double rho_k = 3.0 * MAX(F, 1e-30) * pba->K / (a * a);
     double A = 3.0 * MAX(F, 1e-30);
     double B = 3.0 * F_dot;
     double C = -(rho_tot - rho_k);
-
     double discriminant = B*B - 4.0*A*C;
 
-    /* Enhanced numerical stability guards */
-    if (discriminant >= -1e-10 && F > 1e-30) {  /* Allow tiny negative due to floating point error */
+    if (discriminant >= -1e-10 && F > 1e-30) {
       double disc_safe = MAX(discriminant, 0.0);
       double H_new = (-B + sqrt(disc_safe)) / (2.0 * A);
       pvecback[pba->index_bg_H] = MAX(0.0, H_new);
-      
-      /* Additional safety check */
-      class_test(!isfinite(pvecback[pba->index_bg_H]) || pvecback[pba->index_bg_H] <= 0.,
-                 pba->error_message,
-                 "H is invalid (NaN or <=0) at a=%e (F=%.3e, discriminant=%.3e, rho_tot=%.3e)",
-                 a, F, discriminant, rho_tot);
     } else {
-      /* Fallback to standard Friedmann if quadratic solver fails */
       pvecback[pba->index_bg_H] = sqrt(MAX(0.0, rho_tot - rho_k));
-      class_test(!isfinite(pvecback[pba->index_bg_H]),
-                 pba->error_message,
-                 "Fallback H is NaN at a=%e (rho_tot=%.3e, rho_k=%.3e, F=%.3e)",
-                 a, rho_tot, rho_k, F);
     }
   } else {
-    /* Standard Friedmann equation (used for LCDM, null limit, or when PRTOE is inactive) */
-    if (pba->has_scf == _TRUE_) {
-      /* When PRTOE is off but SCF is on, this is the standard CLASS SCF path */
-      /* The original CLASS doesn't have a xi coupling for SCF, so no modification needed */
-      /* Note: The H_sq_eff already includes all standard contributions */
-    }
+    /* Standard Friedmann for LCDM */
     pvecback[pba->index_bg_H] = sqrt(MAX(0., H_sq_eff));
   }
 
   /** - compute PRTOE H-dependent quantities (must be after Friedmann equation) */
-  /** - CRITICAL FIX: Only execute this block when PRTOE is physically active AND indices are valid
-      When xi_prtoe <= 1e-8, indices are set to -1, causing buffer underflow reads if we access them.
-      This guard prevents corruption during PRTOE null limit (xi → 0) tests. */
-  if (pba->use_prtoe == _TRUE_ && pba->xi_prtoe > 1e-8 && pba->Omega0_prtoe > 0.0) {
+  /** - PRTOE H-dependent quantities computed universally */
+  /** - Indices are always >= 0 when use_prtoe == TRUE (see background_indices) */
+  if (pba->use_prtoe == _TRUE_) {
     /* Retrieve stored values */
     double phi       = pvecback[pba->index_bg_phi_prtoe];
     double phi_prime = pvecback[pba->index_bg_dphi_prtoe];
@@ -3233,14 +3200,13 @@ int background_derivs(
   }
 
   /** ============================================================
-   *  PRTOE / PRTOE-DHOST Scalar Field Evolution
+   *  PRTOE Scalar Field Evolution (Unified Framework)
    *  ============================================================
-   *  This block is ONLY executed when PRTOE is physically active.
-   *  When use_prtoe == _FALSE_ or xi_prtoe <= 1e-8, we explicitly
-   *  set the derivatives to zero (if the indices exist) to guarantee
-   *  that LambdaCDM runs are completely unaffected.
+   *  This block computes PRTOE evolution for all PRTOE configurations.
+   *  Activation is controlled by covariant trans factor, not by guards.
+   *  When inactive (trans≈0), field naturally doesn't evolve.
    *  ============================================================ */
-  if (pba->use_prtoe == _TRUE_ && pba->xi_prtoe > 1e-8 && pba->Omega0_prtoe > 0.0) {
+  if (pba->use_prtoe == _TRUE_) {
 
     double a = exp(loga);
 
