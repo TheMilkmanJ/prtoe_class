@@ -1080,3 +1080,121 @@ RECOMMENDED NEXT STEPS:
 
 STATUS: ✅ PHASE 3 COMPLETE - FLUENT INTEGRATION VERIFIED
 ================================================================================
+
+================================================================================
+PHASE 4 UPDATE: Critical Buffer Underflow Bug Discovered and Partially Fixed
+================================================================================
+
+**DATE:** Post-Phase 3
+**STATUS:** 🔴 CRITICAL BUG FOUND - Partial fix applied, integration issue remains
+
+## Critical Discovery: Multiple Unguarded PRTOE Index Reads
+
+During investigation of the "PRTOE null limit integration stops early" issue, I discovered TWO critical buffer underflow vulnerabilities in background.c:
+
+### Bug #1: Friedmann Equation PRTOE Variables (Line 815-859)
+**Location:** background_functions(), Friedmann equation block
+**Problem:** Lines 815-859 read PRTOE indices WITHOUT checking if they're valid
+**Code:**
+```c
+if (pba->use_prtoe == _TRUE_) {  // ← OLD: No threshold check!
+    double F = pvecback[pba->index_bg_F_prtoe];  // Reads -1 when null limit!
+    double F_phi = pvecback[pba->index_bg_F_phi_prtoe];
+    double phi_prime = pvecback[pba->index_bg_dphi_prtoe];
+    // ... Modified Friedmann equation using these indices
+}
+```
+**Impact:** When PRTOE is in null limit (xi_prtoe ≤ 1e-8), indices are set to -1. Reading pvecback[-1] causes buffer underflow, corrupting memory and potentially corrupting the entire background integration.
+
+**Fix Applied:** Added proper threshold check:
+```c
+if (pba->use_prtoe == _TRUE_ && pba->xi_prtoe > 1e-8 && pba->Omega0_prtoe > 0.0) {
+    // PRTOE Friedmann equation (only when physically active)
+} else {
+    // Standard Friedmann (for LCDM or null limit)
+}
+```
+
+### Bug #2: PRTOE H-Dependent Quantities (Line 870-975)
+**Location:** background_functions(), after Friedmann equation
+**Problem:** Lines 870-975 read PRTOE background table indices WITHOUT validation
+**Code:**
+```c
+if (pba->use_prtoe == _TRUE_) {  // ← OLD: No threshold check!
+    double phi = pvecback[pba->index_bg_phi_prtoe];  // Reads -1 when null limit!
+    double phi_prime = pvecback[pba->index_bg_dphi_prtoe];
+    // ... 100+ lines of PRTOE quantity calculations using these indices
+}
+```
+**Impact:** Same as Bug #1 - buffer underflow when null limit is active
+
+**Fix Applied:** Added proper threshold check wrapping entire 100+ line block
+
+## Remaining Issue: Integration Stops Early (tau_table corruption)
+
+Despite fixing the buffer underflow bugs, the integration still stops early:
+- Integration calls background_sources() only for indices 0, 4000, 8000, ..., 36000
+- Final indices (36001 through 39999) are never processed
+- Result: tau_table[39999] remains 0 (from allocation), causing "out of range" error in background_find_equality()
+
+**Symptoms:**
+- LCDM conformal_age: 14138.843602 Mpc (should be ~14500 Mpc based on parameters)
+- PRTOE null limit conformal_age: 14138.843602 Mpc (identical to LCDM!)
+- Both show identical values, suggesting integration stops at same physical time for both
+- Last successful background_sources() call at loga ≈ -2.3 (should reach loga = 0)
+
+**Root Cause Analysis:**
+- The evolver (ndf15) is calling background_sources() for only ~90% of indices
+- This is NOT a PRTOE issue - it affects both LCDM and PRTOE null limit equally
+- Likely causes:
+  1. Evolver detecting an error/NaN condition and stopping early
+  2. Hardcoded step limit in ndf15 evolver
+  3. Early termination condition in background_derivs() or background_functions()
+  4. Issue in how used_in_output is being used by the evolver
+
+**Investigation Path:**
+- Need to check if background_derivs() has an error condition that fails silently
+- Need to examine ndf15 evolver implementation for early termination logic
+- Need to verify used_in_output array is being correctly populated
+
+## Code Changes Made
+
+### Files Modified:
+1. **source/background.c**
+   - Lines 815-867: Added xi_prtoe > 1e-8 guard to Friedmann equation block
+   - Lines 870-975: Added xi_prtoe > 1e-8 guard to PRTOE H-dependent quantities block
+   - Lines 3434-3440: Added "DEBUG FINAL" print to detect early termination
+
+### Compilation Status:
+✅ Clean compilation succeeded
+✅ Python bindings built successfully
+✅ No compiler errors or warnings
+
+### Testing Status:
+✅ LCDM test compiles and runs (source: test_lambda_cdm.ini)
+❌ LCDM test shows conformal_age = 14138 Mpc (anomalously low)
+❌ PRTOE null limit test shows same conformal_age (identical to LCDM)
+❌ Both tests hit "out of range: tau > tau_max=0" error in background_find_equality()
+
+## Hypothesis for Remaining Issue
+
+The integration stopping at 90% suggests it might be a deliberate early termination, not a crash. Possibilities:
+1. **Threshold Test:** The evolver might be checking if relative errors are small enough and stopping early
+2. **Step Size Reduction:** The evolver might be reducing step size so much it exceeds max iterations
+3. **Activation Behavior:** The covariant activation used in PRTOE calculations might be blocking further evolution
+4. **Residual PRTOE Access:** There might be another unguarded PRTOE index access I haven't found yet
+
+## Next Steps for Phase 4
+
+1. **Immediate:** Search for all remaining unguarded PRTOE index accesses in background.c
+2. **Search Pattern:** `pvecback[pba->index_.*prtoe` and `y[pba->index_.*prtoe` without proper guards
+3. **Low Level Debug:** Add assertions to check index validity before any read
+4. **Evolver Investigation:** Check if ndf15 evolver has hardcoded limits or early exit conditions
+5. **Parameter Check:** Verify that test.ini files have physically reasonable parameters
+
+## Critical Notes
+
+- This bug was HIDDEN by previous architecture: because PRTOE's background integration had proper guards in place, the indices were never read when invalid. The bug only manifested when trying to compute H-dependent quantities unconditionally.
+- The fix demonstrates why fluent PRTOE-LCDM integration is important: when PRTOE is in null limit, we should naturally use LCDM equations, not try to patch PRTOE equations with guards.
+- The conformal_age identity (LCDM = PRTOE null) suggests the fix is working correctly - both should converge to LCDM when PRTOE is inactive. The issue is that they both stop at the SAME place, indicating a deeper integration problem.
+

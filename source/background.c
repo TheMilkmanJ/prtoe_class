@@ -812,11 +812,10 @@ int background_functions(
       \f$ \rho_{class} = [8 \pi G \rho_{physical} / 3 c^2]\f$
       PRTOE Modification: H^2 is scaled by the non-minimal coupling factor 1/(1 + xi*phi) */
   double H_sq_eff = (rho_tot - pba->K / a / a);
-  if (pba->use_prtoe == _TRUE_) {
-    /* PRTOE: Modified Friedmann equation with non-minimal coupling F(phi) */
-    /* User's equation: H^2 = (rho_phi + 3 * H * F_dot) / (3 * F) */
-    /* But we need to include all matter, so: H^2 = (rho_tot + 3 * H * F_dot) / (3 * F) */
-    /* Where rho_tot already includes the scalar field density and other matter */
+  if (pba->use_prtoe == _TRUE_ && pba->xi_prtoe > 1e-8 && pba->Omega0_prtoe > 0.0) {
+    /* PRTOE: Modified Friedmann equation with non-minimal coupling F(phi)
+       CRITICAL: Only execute when PRTOE is physically active (indices are valid).
+       When xi_prtoe <= 1e-8, indices are -1, so we must use standard Friedmann. */
     
     double F = pvecback[pba->index_bg_F_prtoe];
     double F_phi = pvecback[pba->index_bg_F_phi_prtoe];
@@ -858,6 +857,7 @@ int background_functions(
                  a, rho_tot, rho_k, F);
     }
   } else {
+    /* Standard Friedmann equation (used for LCDM, null limit, or when PRTOE is inactive) */
     if (pba->has_scf == _TRUE_) {
       /* When PRTOE is off but SCF is on, this is the standard CLASS SCF path */
       /* The original CLASS doesn't have a xi coupling for SCF, so no modification needed */
@@ -867,7 +867,10 @@ int background_functions(
   }
 
   /** - compute PRTOE H-dependent quantities (must be after Friedmann equation) */
-  if (pba->use_prtoe == _TRUE_) {
+  /** - CRITICAL FIX: Only execute this block when PRTOE is physically active AND indices are valid
+      When xi_prtoe <= 1e-8, indices are set to -1, causing buffer underflow reads if we access them.
+      This guard prevents corruption during PRTOE null limit (xi → 0) tests. */
+  if (pba->use_prtoe == _TRUE_ && pba->xi_prtoe > 1e-8 && pba->Omega0_prtoe > 0.0) {
     /* Retrieve stored values */
     double phi       = pvecback[pba->index_bg_phi_prtoe];
     double phi_prime = pvecback[pba->index_bg_dphi_prtoe];
@@ -3430,6 +3433,11 @@ int background_sources(
     printf("DEBUG mapping: bi_size=%d index_bi_tau=%d y[index_bi_tau]=%g dy[index_bi_tau]=%g\n",
            pba->bi_size, pba->index_bi_tau, y[pba->index_bi_tau], dy[pba->index_bi_tau]);
     }
+  }
+  /* ALWAYS print when we reach the last index to debug early termination */
+  if (index_loga == pba->bt_size - 1 && pba->background_verbose > 0) {
+    printf("DEBUG FINAL: index_loga=%d (bt_size-1=%d), loga=%e, tau=%e\n", 
+           index_loga, pba->bt_size-1, loga, y[pba->index_bi_tau]);
   }
 
   /** - corresponding conformal time */
