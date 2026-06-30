@@ -4007,8 +4007,11 @@ int perturbations_vector_init(
          Aliases are done only when PRTOE is active; when inactive, scf indices
          remain controlled by has_scf and previous behavior.
       */
-      ppv->index_pt_phi_scf = ppv->index_pt_delta_prtoe;
-      ppv->index_pt_phi_prime_scf = ppv->index_pt_ddelta_prtoe;
+      /* Do not alias SCF indices to PRTOE here: aliasing created duplicated equation slots
+         that may lead to singular Jacobians in the NDF integrator. Keep scf indices unset
+         when PRTOE is active to avoid duplicate constraints; patching for diagnostics. */
+      ppv->index_pt_phi_scf = -1;
+      ppv->index_pt_phi_prime_scf = -1;
     } else {
       ppv->index_pt_delta_phi = -1;
       ppv->index_pt_ddelta_phi = -1;
