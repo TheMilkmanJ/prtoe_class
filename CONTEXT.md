@@ -121,6 +121,16 @@ xi → 0, beta → 0, Omega0_prtoe → 0  ⇒  F → 1, Ḟ → 0, standard ΛCD
 σ, rho0, gamma, zeta control environmental screening — flag ad-hoc scaling breaks
 ```
 
+## Source-term normalization
+
+```
+delta_scf / theta_scf sources divide by rho_prtoe only when
+  rho_prtoe > PRTOE_RHO_ACTIVATION_THRESHOLD (1e-30)
+theta_scf uses |rho_prtoe + p_prtoe| > 1e-30 (same scale)
+```
+
 ## Audit instruction for reviewers
 
 Perform an **exhaustive** sweep of all four core files above. Do not stop after the first few findings. Verify every cross-file contract in this document. If output is truncated, continue in a follow-up response until all items are checked.
+
+**Fix impact protocol:** For every proposed fix, trace all readers/writers of touched symbols in the four core files and report downstream inconsistencies in the same review pass.

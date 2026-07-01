@@ -3,8 +3,11 @@
 #
 # GitHub full-context workflow (post on PR):
 #   @coderabbitai full review
-# Persistent learning example:
-#   @coderabbitai Learn: Audit all PRTOE core files against CONTEXT.md cross-file contracts.
+# Persistent learning examples:
+#   @coderabbitai Learn: When trans/F_dot/de_mode changes, trace all readers in
+#     background.c, background.h, perturbations.c, perturbations.h in one review.
+#   @coderabbitai Learn: Every Newtonian metric term needs a synchronous gauge
+#     equivalent; report both or flag as incomplete.
 
 language: en-US
 
@@ -14,7 +17,6 @@ tone_instructions: >-
   continue until all four core files and cross-file contracts are verified.
 
 reviews:
-  # Valid profiles: chill | assertive (there is no "custom" profile in CodeRabbit schema)
   profile: assertive
 
   path_filters:
@@ -31,6 +33,33 @@ reviews:
   auto_review:
     auto_incremental_review: false
 
+  tools:
+    clang:
+      enabled: true
+    cppcheck:
+      enabled: true
+
+  pre_merge_checks:
+    custom_checks:
+      - mode: warning
+        name: PRTOE CONTEXT contract sweep
+        instructions: |
+          Before completing the review, verify every item in CONTEXT.md
+          "Audit instruction" and "Background contracts" / "Perturbation contracts"
+          sections against the whitelisted files. List each contract as PASS or FAIL.
+          If any FAIL, report as Major findings. Do not mark review complete with
+          unchecked contracts.
+
+      - mode: warning
+        name: PRTOE fix impact trace
+        instructions: |
+          For every issue found in the diff, perform a mandatory impact sweep:
+          (1) list symbols and indices touched; (2) find every read/write site in
+          background.c, background.h, perturbations.c, perturbations.h; (3) flag
+          downstream inconsistencies in the SAME review (storage vs solver,
+          background_functions vs background_derivs, IC vs evolution, sync vs
+          Newtonian). Never report an isolated fix without listing affected consumers.
+
   path_instructions:
     - path: "**/*"
       instructions: |
@@ -44,29 +73,37 @@ reviews:
         you have verified all logical dependencies between background.c, background.h,
         perturbations.c, and perturbations.h.
 
-        If the review is truncated due to length, continue the analysis in a
-        follow-up response. Structure output as: Major | Minor | Nit per finding,
-        with file:line, contract violated, and proposed fix.
+        MANDATORY FIX IMPACT PROTOCOL (every finding):
+        - Primary bug: file:line, contract violated, proposed fix.
+        - Impact sweep: grep mentally for all uses of changed symbols (F_dot, trans,
+          trans_eom, de_mode, index_bg_*, index_pt_*, rho_prtoe, rho_plus_p_shear,
+          prtoe_is_physically_active, prtoe_is_covariantly_active_at_tau).
+        - Downstream risks: list sites that must change together; propose fixes now,
+          not on a follow-up review.
+        - Gauge pairs: if Newtonian path changes, check synchronous equivalent.
+
+        If truncated, continue in a follow-up response. Format: Major | Minor | Nit.
 
         Secondary verification pass (mandatory before finalizing):
         1. Activation predicates consistent everywhere
-        2. F_dot identical in Friedmann, storage, helpers
-        3. rho_r budget complete for covariant activation
+        2. F_dot / trans_eom / de_mode aligned in functions + derivs + storage
+        3. rho_r budget complete for covariant activation (incl. NCDM 3*p)
         4. p_tot_prime includes PRTOE
         5. IC metric coupling + rho_plus_p_shear seeded
-        6. Null-limit and unified-dark-sector edge cases
+        6. Source terms: no divide-by rho_prtoe below PRTOE_RHO_ACTIVATION_THRESHOLD
+        7. Null-limit and unified-dark-sector edge cases
 
     - path: "**/perturbations.c"
       instructions: |
-        Deep line-by-line static analysis of PRTOE perturbation logic per CONTEXT.md.
-        Report every logic error, numerical hazard, or gauge inconsistency.
-        Cross-check stress-energy against perturbations_derivs and Section 10.4.
+        Deep line-by-line static analysis per CONTEXT.md. Report every numerical
+        hazard (divide by rho_prtoe, p_tot, F), gauge inconsistency, and index bug.
+        Cross-check source assembly (delta_scf/theta_scf) with perturbations_derivs.
 
     - path: "**/background.c"
       instructions: |
-        Deep line-by-line static analysis of PRTOE background evolution per CONTEXT.md.
-        Report every instability, predicate mismatch, or feed-through error.
-        Cross-check F, F_dot, trans, and Friedmann against Section 2 and 10.5.
+        Deep line-by-line static analysis per CONTEXT.md. Report predicate mismatches
+        between background_functions and background_derivs. Trace every stored
+        index_bg_* slot to perturbation consumers.
 
     - path: "**/perturbations.h"
       instructions: |
@@ -74,8 +111,7 @@ reviews:
 
     - path: "**/background.h"
       instructions: |
-        Audit inline helpers and indices against source/background.c and CONTEXT.md
-        activation-gate table.
+        Audit inline helpers and indices against source/background.c and CONTEXT.md.
 
 knowledge_base:
   code_guidelines:
@@ -83,9 +119,8 @@ knowledge_base:
     filePatterns:
       - path: "CONTEXT.md"
         instructions: |
-          Primary audit checklist for CodeRabbit. Every review finding must reference
-          which contract here is violated. Do not finalize until all contracts checked.
+          Primary audit checklist. Every finding must cite which contract is violated.
+          Run full checklist before finalizing; use fix-impact protocol for each item.
       - path: "PRTOE_Working_Formulation.md"
         instructions: |
-          Full physics specification. Use for derivation-level disputes; CONTEXT.md
-          for implementation contract checks.
+          Full physics specification for derivation-level disputes.

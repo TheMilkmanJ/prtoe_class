@@ -8397,7 +8397,8 @@ int perturbations_sources(
         double rho_prtoe_src = pvecback[pba->index_bg_rho_prtoe];
         if (pba->de_mode == prtoe_active
             && prtoe_is_covariantly_active_at_tau(pba, rho_prtoe_src)
-            && ppw->pv->index_pt_delta_prtoe >= 0) {
+            && ppw->pv->index_pt_delta_prtoe >= 0
+            && rho_prtoe_src > PRTOE_RHO_ACTIVATION_THRESHOLD) {
           double w_prtoe = pvecback[pba->index_bg_p_prtoe]/rho_prtoe_src;
           if (ppt->gauge == synchronous){
             delta_rho_scf = 1./3.*(1./a2*ppw->pvecback[pba->index_bg_dphi_prtoe]*y[ppw->pv->index_pt_ddelta_prtoe] + ppw->pvecback[pba->index_bg_dV_scf]*y[ppw->pv->index_pt_delta_prtoe]) + 3.*a_prime_over_a*(1.+w_prtoe)*theta_over_k2;
