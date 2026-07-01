@@ -272,6 +272,9 @@ int background_at_z(
                pba->error_message);
   }
 
+  /* Scale factor is kinematic: enforce exact value from log(a/a_0). */
+  pvecback[pba->index_bg_a] = exp(loga);
+
   return _SUCCESS_;
 }
 
@@ -595,7 +598,13 @@ int background_functions(
     double F_phiphiphi = 0.0;
      
     if (pba->use_prtoe == _TRUE_ && prtoe_is_physically_active(pba)) {
-      double xi_eff = get_xi_eff(pba, phi);
+      double rho_matter_class = 0.0;
+      if (pba->has_cdm == _TRUE_) {
+        rho_matter_class += pvecback[pba->index_bg_rho_cdm];
+      }
+      rho_matter_class += pvecback[pba->index_bg_rho_b];
+      double rho_matter_kg_m3 = prtoe_rho_class_to_kg_m3(pba, rho_matter_class, a);
+      double xi_eff = get_xi_eff_environmental(pba, phi, rho_matter_kg_m3);
        
       /* A(φ): activation function (tanh-based transition) */
       double u = (phi - pba->phi_c_prtoe) / pba->delta_phi_prtoe;
@@ -608,10 +617,10 @@ int background_functions(
 
       /* Compute derivatives of xi_eff numerically for consistency */
       double dphi_numerical = 1e-8;
-      double xi_eff_plus = get_xi_eff(pba, phi + dphi_numerical);
-      double xi_eff_minus = get_xi_eff(pba, phi - dphi_numerical);
-      double xi_eff_2plus = get_xi_eff(pba, phi + 2.0 * dphi_numerical);
-      double xi_eff_2minus = get_xi_eff(pba, phi - 2.0 * dphi_numerical);
+      double xi_eff_plus = get_xi_eff_environmental(pba, phi + dphi_numerical, rho_matter_kg_m3);
+      double xi_eff_minus = get_xi_eff_environmental(pba, phi - dphi_numerical, rho_matter_kg_m3);
+      double xi_eff_2plus = get_xi_eff_environmental(pba, phi + 2.0 * dphi_numerical, rho_matter_kg_m3);
+      double xi_eff_2minus = get_xi_eff_environmental(pba, phi - 2.0 * dphi_numerical, rho_matter_kg_m3);
        
       double dxi_eff_dphi = (xi_eff_plus - xi_eff_minus) / (2.0 * dphi_numerical);
       double d2xi_eff_dphi2 = (xi_eff_2plus - 2.0 * xi_eff + xi_eff_2minus) / (4.0 * dphi_numerical * dphi_numerical);
@@ -643,10 +652,10 @@ int background_functions(
       double A_2p = 0.5 * (1.0 + tanh(u_2p));
       double A_2m = 0.5 * (1.0 + tanh(u_2m));
 
-      double xi_eff_p = get_xi_eff(pba, phi_p);
-      double xi_eff_m = get_xi_eff(pba, phi_m);
-      double xi_eff_2p = get_xi_eff(pba, phi_2p);
-      double xi_eff_2m = get_xi_eff(pba, phi_2m);
+      double xi_eff_p = get_xi_eff_environmental(pba, phi_p, rho_matter_kg_m3);
+      double xi_eff_m = get_xi_eff_environmental(pba, phi_m, rho_matter_kg_m3);
+      double xi_eff_2p = get_xi_eff_environmental(pba, phi_2p, rho_matter_kg_m3);
+      double xi_eff_2m = get_xi_eff_environmental(pba, phi_2m, rho_matter_kg_m3);
 
       double F_p = 1.0 + xi_eff_p * A_p;
       double F_m = 1.0 + xi_eff_m * A_m;
@@ -873,13 +882,20 @@ int background_functions(
       double C = -(rho_tot - rho_k);
       double discriminant = B*B - 4.0*A*C;
 
-      if (discriminant >= -1e-10 && F > 1e-30) {
-        double disc_safe = MAX(discriminant, 0.0);
-        double H_new = (-B + sqrt(disc_safe)) / (2.0 * A);
-        pvecback[pba->index_bg_H] = MAX(0.0, H_new);
-      } else {
-        pvecback[pba->index_bg_H] = sqrt(MAX(0.0, rho_tot - rho_k));
-      }
+      class_test(F <= 1e-30,
+                 pba->error_message,
+                 "PRTOE Friedmann equation has non-positive F=%e at a=%e", F, a);
+      class_test(discriminant < -1e-10,
+                 pba->error_message,
+                 "PRTOE Friedmann equation has negative discriminant=%e at a=%e",
+                 discriminant, a);
+
+      double disc_safe = MAX(discriminant, 0.0);
+      double H_new = (-B + sqrt(disc_safe)) / (2.0 * A);
+      class_test(!isfinite(H_new) || H_new <= 0.0,
+                 pba->error_message,
+                 "PRTOE Friedmann equation produced invalid H=%e at a=%e", H_new, a);
+      pvecback[pba->index_bg_H] = H_new;
     }
   } else {
     /* Standard Friedmann for LCDM and PRTOE-disabled runs */
@@ -932,16 +948,16 @@ int background_functions(
 
         double H_dot;
         if (F > 1e-30 && trans > 1e-8) {
-            H_dot = - (3.0/2.0) * (rho_tot + p_tot) * a / (3.0 * F)
+            H_dot = - (3.0/2.0) * (rho_tot + p_tot) / F
                     - (F_dot * H) / F
-                    + (pba->K / (a*a)) * (F_dot / F);
+                    + pba->K / (a*a);
         } else {
             H_dot = pvecback[pba->index_bg_H_prime] / a;
         }
 
         double phi_ddot = trans * (-3.0 * H * phi_dot - V_phi
                                    + (F_phi / MAX(F, 1e-30)) * (H_dot + 2.0 * H * H));
-        double phi_primeprime = phi_ddot * a * a + trans * 2.0 * H * a * a * phi_dot;
+        double phi_primeprime = phi_ddot * a * a + trans * H * a * a * phi_dot;
         pvecback[pba->index_bg_ddphi_prtoe] = phi_primeprime;
 
         double F_ddot = trans * (F_phiphi * phi_dot * phi_dot + F_phi * phi_ddot);
@@ -984,7 +1000,7 @@ int background_functions(
 
   /* Derivative of total pressure w.r.t. conformal time */
   pvecback[pba->index_bg_p_tot_prime] = a*pvecback[pba->index_bg_H]*dp_dloga;
-  if (pba->has_scf == _TRUE_) {
+  if (pba->has_scf == _TRUE_ && prtoe_is_physically_active(pba) == _FALSE_) {
     /** The contribution of scf was not added to dp_dloga, add p_scf_prime here: */
     pvecback[pba->index_bg_p_prime_scf] = pvecback[pba->index_bg_phi_prime_scf]*
       (-pvecback[pba->index_bg_phi_prime_scf]*pvecback[pba->index_bg_H]/a-2./3.*pvecback[pba->index_bg_dV_scf]);
@@ -1280,12 +1296,14 @@ int background_init(
   if (prtoe_is_physically_active(pba)) {
     if (pba->Omega0_prtoe > 0.0) {
       pba->omega_dark_energy = pba->Omega0_prtoe;
-    } else if (pba->Omega0_lambda > 0.0) {
-      pba->omega_dark_energy = pba->Omega0_lambda;
     } else {
-      pba->omega_dark_energy = 0.7;
+      class_test(pba->Omega0_lambda < 0.0,
+                 pba->error_message,
+                 "PRTOE budget residual is negative: Omega0_prtoe = %e",
+                 pba->Omega0_lambda);
+      pba->omega_dark_energy = pba->Omega0_lambda;
     }
-    if ((pba->xi_prtoe > 1e-8) || (pba->beta_prtoe > 1e-8)) {
+    if ((pba->xi_prtoe >= 1e-7) || (pba->beta_prtoe > 1e-8)) {
       pba->de_mode = prtoe_active;
       if (pba->background_verbose > 1) {
         printf(" -> Dark energy mode: PRTOE ACTIVE (xi=%.2e, beta=%.2e, Omega=%.3e)\n",
@@ -1318,8 +1336,37 @@ int background_init(
     }
   }
 
+  /** - local gravity / fifth-force bound (Cassini-scale screening) */
+  if (prtoe_is_physically_active(pba)) {
+    class_test(prtoe_passes_local_gravity_bounds(pba) == _FALSE_,
+               pba->error_message,
+               "PRTOE fails local fifth-force bound: xi_prtoe=%.3e or |G_eff/G-1| exceeds %.3e. "
+               "Tune sigma_prtoe, rho0_prtoe, gamma_prtoe, zeta_prtoe, or reduce xi_prtoe.",
+               pba->xi_prtoe,
+               PRTOE_FIFTH_FORCE_XI_EFF_MAX);
+    if (pba->background_verbose > 0) {
+      double dev_sun = prtoe_fifth_force_deviation_at_rho_kg_m3(pba, PRTOE_RHO_SOLAR_INTERIOR_KG_M3);
+      double dev_earth = prtoe_fifth_force_deviation_at_rho_kg_m3(pba, PRTOE_RHO_EARTH_CRUST_KG_M3);
+      double phi_sun = prtoe_phi_at_matter_density_kg_m3(pba, PRTOE_RHO_SOLAR_INTERIOR_KG_M3);
+      printf(" -> Local gravity map: |dG/G|_sun=%.3e |dG/G|_earth=%.3e phi_sun=%.3e (sigma=%.3e rho0=%.3e gamma=%.3e)\n",
+             dev_sun, dev_earth, phi_sun, pba->sigma_prtoe, pba->rho0_prtoe, pba->gamma_prtoe);
+    }
+    if (prtoe_unified_dark_sector_active(pba) && pba->background_verbose > 0) {
+      printf(" -> Unified dark sector: ON (Omega_cdm absorbed=%.4f, Omega0_prtoe=%.4f, g_c=%.3f)\n",
+             pba->Omega0_cdm_absorbed, pba->Omega0_prtoe, pba->g_c_prtoe);
+    } else if (pba->unify_dark_sector == _TRUE_ && pba->background_verbose > 0) {
+      printf(" -> Unified dark sector: partial (g_c_prtoe=%.3f blends PRTOE with CDM)\n",
+             pba->g_c_prtoe);
+    }
+  }
+
   /** - integrate the background over log(a), allocate and fill the background table */
   class_call(background_solve(ppr,pba),
+             pba->error_message,
+             pba->error_message);
+
+  /** - post-integration local-gravity / fifth-force validation (§6.4) */
+  class_call(background_prtoe_local_gravity_post_integration(pba),
              pba->error_message,
              pba->error_message);
 
@@ -1337,6 +1384,82 @@ int background_init(
 
   return _SUCCESS_;
 
+}
+
+/**
+ * Post-integration local-gravity validation for active PRTOE runs.
+ * Complements the pre-solve init gate with phi(a=1) and F(a=1) from the
+ * integrated background table.
+ */
+int background_prtoe_local_gravity_post_integration(
+                                                    struct background *pba
+                                                    ) {
+
+  double dev_sun = 0.;
+  double dev_earth = 0.;
+  double phi_today = 0.;
+  double F_today = 1.;
+  double dev_vac = 0.;
+
+  if (!prtoe_is_physically_active(pba)) {
+    return _SUCCESS_;
+  }
+
+  dev_sun = prtoe_fifth_force_deviation_at_rho_kg_m3(pba, PRTOE_RHO_SOLAR_INTERIOR_KG_M3);
+  dev_earth = prtoe_fifth_force_deviation_at_rho_kg_m3(pba, PRTOE_RHO_EARTH_CRUST_KG_M3);
+
+  if (pba->index_bg_phi_prtoe >= 0 && pba->bt_size > 0) {
+    int last = pba->bt_size - 1;
+    phi_today = pba->background_table[last * pba->bg_size + pba->index_bg_phi_prtoe];
+    if (pba->index_bg_F_prtoe >= 0) {
+      F_today = pba->background_table[last * pba->bg_size + pba->index_bg_F_prtoe];
+    }
+    else {
+      double u = (phi_today - pba->phi_c_prtoe) / MAX(pba->delta_phi_prtoe, 1e-30);
+      double A = 0.5 * (1.0 + tanh(u));
+      F_today = 1.0 + get_xi_eff(pba, phi_today) * A;
+    }
+    dev_vac = fabs(1.0 / MAX(F_today, 1e-30) - 1.0);
+  }
+
+  {
+    double gamma_minus_one =
+      prtoe_ppn_gamma_minus_one_at_rho(pba, PRTOE_RHO_SOLAR_INTERIOR_KG_M3);
+    double precession_excess = prtoe_mercury_precession_excess_rad(pba);
+    double eta_ep =
+      prtoe_equivalence_principle_eta(pba, PRTOE_RHO_EARTH_CRUST_KG_M3, 1.e-6);
+
+    if (pba->background_verbose > 0) {
+      printf(" -> Post-integration local gravity: |dG/G|_sun=%.3e |dG/G|_earth=%.3e "
+             "|dG/G|_vac(a=1)=%.3e phi_today=%.3e F_today=%.6f\n",
+             dev_sun, dev_earth, dev_vac, phi_today, F_today);
+      printf(" -> Solar-system orbit: |gamma-1|=%.3e precession_excess=%.3e rad/orbit\n",
+             fabs(gamma_minus_one), precession_excess);
+      printf(" -> EP torsion-balance: eta_EP=%.3e at Earth crust density\n", eta_ep);
+    }
+
+    class_test(fabs(gamma_minus_one) > PRTOE_FIFTH_FORCE_XI_EFF_MAX,
+               pba->error_message,
+               "PRTOE fails solar-system PPN bound: |gamma-1|=%.3e > %.3e at solar density",
+               fabs(gamma_minus_one), PRTOE_FIFTH_FORCE_XI_EFF_MAX);
+    class_test(precession_excess > 1.0,
+               pba->error_message,
+               "PRTOE predicts excessive Mercury perihelion precession excess (%.3e rad/orbit)",
+               precession_excess);
+    class_test(eta_ep > PRTOE_FIFTH_FORCE_XI_EFF_MAX,
+               pba->error_message,
+               "PRTOE fails equivalence-principle bound: eta_EP=%.3e > %.3e",
+               eta_ep, PRTOE_FIFTH_FORCE_XI_EFF_MAX);
+  }
+
+  class_test(prtoe_post_integration_local_gravity_passes(pba) == _FALSE_,
+             pba->error_message,
+             "PRTOE fails post-integration fifth-force bound (|dG/G| > %.3e at solar/Earth "
+             "or vacuum leakage at a=1). Tune sigma_prtoe, rho0_prtoe, gamma_prtoe, zeta_prtoe, "
+             "or reduce xi_prtoe.",
+             PRTOE_FIFTH_FORCE_XI_EFF_MAX);
+
+  return _SUCCESS_;
 }
 
 /**
@@ -2404,9 +2527,19 @@ int background_checks(
   }
 
   if (pba->use_prtoe == _TRUE_) {
-    class_test(pba->Omega0_b <= 0.0 || pba->Omega0_cdm <= 0.0,
-               pba->error_message,
-               "Matter densities Omega_b and Omega_cdm must be strictly positive.");
+    if (prtoe_unified_dark_sector_active(pba)) {
+      class_test(pba->Omega0_b <= 0.0,
+                 pba->error_message,
+                 "Baryon density Omega_b must be strictly positive.");
+      class_test(pba->Omega0_prtoe <= 0.0,
+                 pba->error_message,
+                 "Unified PRTOE dark sector requires Omega0_prtoe > 0 after CDM absorption.");
+    }
+    else {
+      class_test(pba->Omega0_b <= 0.0 || pba->Omega0_cdm <= 0.0,
+                 pba->error_message,
+                 "Matter densities Omega_b and Omega_cdm must be strictly positive.");
+    }
     class_test(pba->H0 <= 0.0,
                pba->error_message,
                "Hubble parameter H0 must be strictly positive.");
@@ -2839,7 +2972,7 @@ int background_initial_conditions(
   /** ============================================================
    *  PRTOE Initial Conditions (only when physically active)
    *  ============================================================ */
-  if (pba->use_prtoe == _TRUE_ && pba->xi_prtoe > 1e-8 && pba->Omega0_prtoe > 0.0) {
+  if (pba->use_prtoe == _TRUE_ && pba->xi_prtoe >= 1e-7 && pba->Omega0_prtoe > 0.0) {
 
     double a = ppr->a_ini_over_a_today_default;
 
@@ -3417,8 +3550,7 @@ int background_derivs(
     /* Apply mode scaling to transition factor */
     double trans_scaled = trans * coupling_strength;
     double xi_eff = get_xi_eff(pba, phi);
-    double screening_factor = xi_eff / pba->xi_prtoe;  // Normalized screening
-    
+
     /* Effective coupling with screening and activation */
     double xi_effective = xi_eff * trans;
 
@@ -3449,9 +3581,9 @@ int background_derivs(
          Differentiate: 6F H H_dot + 3F_dot H_dot + 3F H_dot² + 3H F_ddot = ...
          Simplified estimate: H_dot ≈ -(rho_tot + p_tot) * a / (2F) - (F_dot * H) / F
        */
-      H_dot = - (3.0/2.0) * (pvecback[pba->index_bg_rho_tot] + pvecback[pba->index_bg_p_tot]) * a / (3.0 * F)
+      H_dot = - (3.0/2.0) * (pvecback[pba->index_bg_rho_tot] + pvecback[pba->index_bg_p_tot]) / F
               - (F_dot_bg * H) / F
-              + (pba->K / (a*a)) * (F_dot_bg / F);
+              + pba->K / (a*a);
     } else {
       H_dot = pvecback[pba->index_bg_H_prime] / a;   // fallback to lagged value
     }
@@ -3464,9 +3596,18 @@ int background_derivs(
                       - V_phi
                       + (F_phi / MAX(F, 1e-30)) * (H_dot + 2.0 * H * H)
                       - (F_phi / MAX(F, 1e-30)) * (0.5 * phi_dot * phi_dot);  // friction from varying F
-    
-    /* Convert to conformal time: phi_primeprime = phi_ddot * a^2 + 2 * H * a^2 * phi_dot */
-    double phi_primeprime = phi_ddot * a * a + 2.0 * H * a * a * phi_dot;
+
+    /* §2.4: explicit □F / ∇∇F background correction (FLRW reduction) */
+    {
+      double F_phiphi_bg = pvecback[pba->index_bg_F_phiphi_prtoe];
+      double box_phi_phys = phi_ddot + 3.0 * H * phi_dot;
+      double box_F_flrw = prtoe_box_F_flrw(F_phi, F_phiphi_bg, box_phi_phys, phi_dot);
+      double nabla_corr = prtoe_nabla_box_F_background_correction(F, F_phi, box_F_flrw, H);
+      phi_ddot -= trans_scaled * nabla_corr;
+    }
+
+    /* Convert to conformal time: phi_primeprime = phi_ddot * a^2 + H * a^2 * phi_dot */
+    double phi_primeprime = phi_ddot * a * a + H * a * a * phi_dot;
     
     /* Use effective activation (covariant + screening) for smooth field evolution */
     double dloga_gate = trans_scaled;
@@ -3640,7 +3781,16 @@ int background_output_budget(
     printf(" ---> Nonrelativistic Species \n");
     class_print_species("Bayrons",b);
     budget_matter+=pba->Omega0_b;
-    if (pba->has_cdm == _TRUE_) {
+    if (prtoe_unified_dark_sector_active(pba)) {
+      printf("-> %-30s Omega = %-15g , omega = %-15g\n",
+             "Unified Dark Sector (PRTOE)",
+             pba->Omega0_prtoe,
+             pba->Omega0_prtoe * pba->h * pba->h);
+      budget_matter += pba->Omega0_prtoe;
+      if (pba->Omega0_cdm_absorbed > 0.0) {
+        printf("   (absorbed former CDM Omega = %.4g)\n", pba->Omega0_cdm_absorbed);
+      }
+    } else if (pba->has_cdm == _TRUE_) {
       class_print_species("Cold Dark Matter",cdm);
       budget_matter+=pba->Omega0_cdm;
     }
@@ -3687,7 +3837,7 @@ int background_output_budget(
       class_print_species("Cosmological Constant",lambda);
       budget_other+=pba->Omega0_lambda;
     }
-    if (prtoe_is_physically_active(pba) == _TRUE_) {
+    if (prtoe_is_physically_active(pba) == _TRUE_ && !prtoe_unified_dark_sector_active(pba)) {
       printf("-> %-30s Omega = %-15g , omega = %-15g\n",
              "PRTOE Dark Energy",
              pba->Omega0_prtoe,
@@ -3771,8 +3921,13 @@ int prtoe_compute_quantities(
     double exp_term = exp(-pba->lambda_prtoe * phi);
     double V = pba->V0_prtoe * exp_term + 0.5 * pba->m_prtoe * pba->m_prtoe * phi * phi;
 
-    /* === Coupling function F(phi) with consistent screening via get_xi_eff === */
-    double xi_eff = get_xi_eff(pba, phi);
+    /* === Coupling function F(phi) with Vainshtein + environmental screening === */
+    double rho_matter_class = pba->Omega0_b * pow(pba->H0, 2) / pow(a, 3);
+    if (pba->has_cdm == _TRUE_) {
+      rho_matter_class += pba->Omega0_cdm * pow(pba->H0, 2) / pow(a, 3);
+    }
+    double rho_matter_kg_m3 = prtoe_rho_class_to_kg_m3(pba, rho_matter_class, a);
+    double xi_eff = get_xi_eff_environmental(pba, phi, rho_matter_kg_m3);
     double u = (phi - pba->phi_c_prtoe) / pba->delta_phi_prtoe;
     double tanh_u = tanh(u);
     double sech2_u = 1.0 - tanh_u * tanh_u;
@@ -3783,10 +3938,10 @@ int prtoe_compute_quantities(
     /* F(phi) = 1 + xi_eff * A, where xi_eff already includes phi^2 screening */
     double F_val = 1.0 + xi_eff * A;
     /* F_phi = dF/dphi = xi_eff * A_prime + A * d(xi_eff)/dphi */
-    /* For xi_eff = xi_prtoe * phi^2 / (1 + zeta * phi^2), we have: */
-    /* d(xi_eff)/dphi = xi_prtoe * [2phi(1+zeta*phi^2) - phi^2*2*zeta*phi] / (1+zeta*phi^2)^2 */
-    /*                = xi_prtoe * 2phi / (1+zeta*phi^2)^2 */
-    double dxi_eff_dphi = pba->xi_prtoe * 2.0 * phi / pow(1.0 + pba->zeta_prtoe * phi * phi, 2);
+    double dphi_numerical = 1e-8;
+    double xi_eff_plus = get_xi_eff_environmental(pba, phi + dphi_numerical, rho_matter_kg_m3);
+    double xi_eff_minus = get_xi_eff_environmental(pba, phi - dphi_numerical, rho_matter_kg_m3);
+    double dxi_eff_dphi = (xi_eff_plus - xi_eff_minus) / (2.0 * dphi_numerical);
     double F_phi_val = xi_eff * A_prime + A * dxi_eff_dphi;
 
     /* === Covariant Activation: Use rho_phi / rho_r ratio === */

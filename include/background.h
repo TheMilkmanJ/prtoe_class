@@ -147,6 +147,9 @@ struct background
   double omega_dark_energy;       /**< Total dark energy Omega (computed from Omega_Lambda or Omega0_prtoe) */
   double varconst_me; /**< electron mass for varying fundamental constants */
   double g_c_prtoe;     /**< Dark Matter field coupling multiplier */
+  short unify_dark_sector; /**< If yes: single PRTOE field replaces CDM+DE budget */
+  short prtoe_explicit_null_de; /**< User set Omega0_prtoe=0: preserve Lambda (null-limit path) */
+  double Omega0_cdm_absorbed; /**< CDM Omega moved into Omega0_prtoe when unified */
   enum varconst_dependence varconst_dep; /**< dependence of the varying fundamental constants as a function of time */
 
   /* Canonical PRTOE parameters with *_prtoe suffix (screened triplet & potential) */
@@ -489,6 +492,10 @@ extern "C" {
                       struct background *pba
                       );
 
+  int background_prtoe_local_gravity_post_integration(
+                                                      struct background *pba
+                                                      );
+
   int background_free(
                       struct background *pba
                       );
@@ -689,13 +696,122 @@ extern "C" {
 
 //@}
 
-/** Returns the effective coupling xi_eff(phi) with screening */
+/** Returns the effective coupling xi_eff(phi) with Vainshtein screening S(phi) only. */
 static inline double get_xi_eff(struct background *pba, double phi) {
-    // Screening function S(phi) = phi^2 / (1 + zeta * phi^2)
     double phi2 = phi * phi;
     double denom = 1.0 + pba->zeta_prtoe * phi2;
     double S_phi = phi2 / denom;
     return pba->xi_prtoe * S_phi;
+}
+
+/**
+ * Scale-dependent G_eff/G from screened xi_eff(phi) and PRTOE potential.
+ * Returns _TRUE_ when ratio is finite and safe to use.
+ */
+static inline int prtoe_compute_G_eff_ratio_k2(struct background *pba,
+                                             double phi,
+                                             double k2_a2,
+                                             double *G_eff_ratio_out) {
+    double xi_eff = get_xi_eff(pba, phi);
+    double lambda = pba->lambda_prtoe;
+    double V0 = pba->V0_prtoe;
+    double m = pba->m_prtoe;
+    double M2 = lambda * lambda * V0 * exp(-lambda * phi) + m * m;
+    double zphi2 = 1.0 + pba->zeta_prtoe * phi * phi;
+    double term1 = 1.0 + 4.0 * phi / zphi2;
+    double xiphi = xi_eff * phi;
+    double denom_xi = 1.0 + xiphi;
+    double term2 = term1 - 3.0 * xi_eff * xi_eff / denom_xi;
+    double denom2 = k2_a2 * term2 + M2;
+    if (term2 <= 0.0
+        || fabs(denom_xi) < 1e-30
+        || fabs(denom2) < 1e-30
+        || !isfinite(denom_xi)
+        || !isfinite(term2)
+        || !isfinite(denom2)) {
+        return _FALSE_;
+    }
+    *G_eff_ratio_out = (1.0 / denom_xi) * ((k2_a2 * term1 + M2) / denom2);
+    return isfinite(*G_eff_ratio_out) ? _TRUE_ : _FALSE_;
+}
+
+/** Solar-system and Earth reference densities for local-gravity map [kg/m^3]. */
+#define PRTOE_RHO_SOLAR_INTERIOR_KG_M3 1.0e3
+#define PRTOE_RHO_EARTH_CRUST_KG_M3    5.5e3
+
+/** Convert CLASS background density [Mpc^-2] to physical kg/m^3. */
+static inline double prtoe_rho_class_to_kg_m3(struct background *pba, double rho_class, double a) {
+    double Omega = rho_class * a * a * a / (pba->H0 * pba->H0);
+    return Omega * 1.8788e-26 * pba->h * pba->h;
+}
+
+/**
+ * Chameleon / displacement environmental screening from local matter density.
+ * S_env -> 0 in dense environments, -> 1 in cosmic vacuum.
+ */
+static inline double prtoe_environmental_screening_at_rho_kg_m3(struct background *pba,
+                                                               double rho_kg_m3) {
+    if (pba->sigma_prtoe <= 0.0 && pba->gamma_prtoe <= 0.0) {
+        return 1.0;
+    }
+    double rho0 = MAX(pba->rho0_prtoe, 1e-30);
+    double ratio = rho_kg_m3 / rho0;
+    double gamma_exp = MAX(pba->gamma_prtoe, 1e-3);
+    double S_env = 1.0 / (1.0 + pow(ratio, gamma_exp));
+    if (pba->sigma_prtoe > 0.0) {
+        S_env *= exp(-pba->sigma_prtoe * ratio);
+    }
+    return MAX(0.0, MIN(1.0, S_env));
+}
+
+/**
+ * Equilibrium field value at matter density rho [kg/m^3].
+ * Displacement: phi ~ gamma ln(rho/rho0), chameleon: suppressed at high rho.
+ */
+static inline double prtoe_phi_at_matter_density_kg_m3(struct background *pba,
+                                                      double rho_kg_m3) {
+    double rho0 = MAX(pba->rho0_prtoe, 1e-30);
+    double ratio = MAX(rho_kg_m3 / rho0, 1e-30);
+    double phi_disp = 0.0;
+    if (pba->gamma_prtoe > 0.0) {
+        phi_disp = pba->gamma_prtoe * log(ratio);
+    }
+    double phi_cham = phi_disp / (1.0 + pow(ratio, MAX(pba->gamma_prtoe, 1e-3)));
+    if (pba->sigma_prtoe > 0.0 && rho_kg_m3 > 0.0) {
+        double exp_term = exp(-pba->lambda_prtoe * phi_cham);
+        double V_phi = -pba->lambda_prtoe * pba->V0_prtoe * exp_term
+                     + pba->m_prtoe * pba->m_prtoe * phi_cham;
+        double target = pba->sigma_prtoe * rho_kg_m3 * 1e-10;
+        phi_cham *= exp(-fabs(V_phi) / MAX(fabs(target), 1e-30));
+    }
+    return phi_cham;
+}
+
+/** xi_eff with Vainshtein S(phi) and environmental S_env(rho). */
+static inline double get_xi_eff_environmental(struct background *pba,
+                                            double phi,
+                                            double rho_kg_m3) {
+    return get_xi_eff(pba, phi)
+         * prtoe_environmental_screening_at_rho_kg_m3(pba, rho_kg_m3);
+}
+
+/** Effective G_eff/G at environment (Newtonian, small-coupling limit). */
+static inline double prtoe_G_eff_over_G_at_environment(struct background *pba,
+                                                       double phi,
+                                                       double rho_kg_m3) {
+    double xi_env = get_xi_eff_environmental(pba, phi, rho_kg_m3);
+    double u = (phi - pba->phi_c_prtoe) / MAX(pba->delta_phi_prtoe, 1e-30);
+    double A = 0.5 * (1.0 + tanh(u));
+    double F = 1.0 + xi_env * A;
+    return 1.0 / MAX(F, 1e-30);
+}
+
+/** |G_eff/G - 1| at a reference matter density. */
+static inline double prtoe_fifth_force_deviation_at_rho_kg_m3(struct background *pba,
+                                                              double rho_kg_m3) {
+    double phi_eq = prtoe_phi_at_matter_density_kg_m3(pba, rho_kg_m3);
+    double Geff = prtoe_G_eff_over_G_at_environment(pba, phi_eq, rho_kg_m3);
+    return fabs(Geff - 1.0);
 }
 
 /**
@@ -715,10 +831,11 @@ static inline int prtoe_is_physically_active(struct background *pba) {
     if (pba->use_prtoe == _FALSE_) {
         return _FALSE_;
     }
-    /* Active if user requested a non-negligible coupling or explicit Omega0_prtoe */
-    if (pba->xi_prtoe      > 1e-8 ||
-        pba->beta_prtoe    > 1e-8 ||
-        pba->Omega0_prtoe  > 0.0) {
+    if (pba->prtoe_explicit_null_de == _TRUE_) {
+        return _FALSE_;
+    }
+    /* Explicit dark-energy budget or non-minimal coupling (xi) activates PRTOE. */
+    if (pba->Omega0_prtoe > 0.0 || pba->xi_prtoe >= 1e-7) {
         return _TRUE_;
     }
     return _FALSE_;
@@ -736,6 +853,30 @@ static inline int prtoe_is_covariantly_active_at_tau(struct background *pba, dou
         return _FALSE_;
     }
     return (rho_prtoe > PRTOE_RHO_ACTIVATION_THRESHOLD) ? _TRUE_ : _FALSE_;
+}
+
+/**
+ * FLRW reduction of □F for homogeneous F(phi) (§2.4 documented approximation).
+ * □F = F_φ □φ + F_φφ φ̇² with □φ = φ̈ + 3H φ̇ (physical time).
+ */
+static inline double prtoe_box_F_flrw(double F_phi,
+                                      double F_phiphi,
+                                      double box_phi_phys,
+                                      double phi_dot_phys) {
+    return F_phi * box_phi_phys + F_phiphi * phi_dot_phys * phi_dot_phys;
+}
+
+/**
+ * Leading background correction from neglected ∇∇F / □F metric-variation pieces.
+ * Subtracted from φ̈ in background_derivs (controlled approximation, §2.4).
+ */
+static inline double prtoe_nabla_box_F_background_correction(double F,
+                                                           double F_phi,
+                                                           double box_F_flrw,
+                                                           double H) {
+    double F_safe = MAX(F, 1e-30);
+    double H_safe = MAX(fabs(H), 1e-30);
+    return (F_phi / F_safe) * box_F_flrw / (6.0 * H_safe * H_safe);
 }
 
 /**
@@ -761,6 +902,204 @@ static inline double prtoe_compute_meff2(double V_phiphi,
 /** Blend a coupling ratio toward unity: 1 + g*(ratio - 1). g=0 → GR, g=1 → full ratio. */
 static inline double prtoe_blend_coupling(double g_coupling, double ratio) {
     return 1.0 + g_coupling * (ratio - 1.0);
+}
+
+/** Cassini-scale bound on effective coupling xi_eff(phi) at solar-system densities. */
+#define PRTOE_FIFTH_FORCE_XI_EFF_MAX 1e-5
+
+/** PPN γ−1 ≈ G_eff/G − 1 at a screened environment density [kg/m^3]. */
+static inline double prtoe_ppn_gamma_minus_one_at_rho(struct background *pba,
+                                                      double rho_kg_m3) {
+    double phi_eq = prtoe_phi_at_matter_density_kg_m3(pba, rho_kg_m3);
+    return prtoe_G_eff_over_G_at_environment(pba, phi_eq, rho_kg_m3) - 1.0;
+}
+
+/**
+ * Equivalence-principle violation η_EP = |G_eff,b − G_eff,c| at lab-scale k.
+ * Torsion-balance experiments require η_EP ≪ 10^{-13}; we gate at 10^{-5} here.
+ */
+static inline double prtoe_equivalence_principle_eta(struct background *pba,
+                                                     double rho_kg_m3,
+                                                     double k2_over_a2) {
+    double phi_eq = prtoe_phi_at_matter_density_kg_m3(pba, rho_kg_m3);
+    double Geff_ratio = 1.0;
+    if (prtoe_compute_G_eff_ratio_k2(pba, phi_eq, k2_over_a2, &Geff_ratio) == _FALSE_) {
+        return 1.0;
+    }
+    double g_b = prtoe_blend_coupling(pba->g_b_prtoe, Geff_ratio);
+    double g_c = prtoe_blend_coupling(pba->g_c_prtoe, Geff_ratio);
+    return fabs(g_b - g_c);
+}
+
+/**
+ * Order-of-magnitude Mercury perihelion precession excess [rad/orbit]
+ * from screened γ−1 at solar-interior density (PPN weak-field scaling).
+ */
+static inline double prtoe_mercury_precession_excess_rad(struct background *pba) {
+    double gamma_minus_one =
+        prtoe_ppn_gamma_minus_one_at_rho(pba, PRTOE_RHO_SOLAR_INTERIOR_KG_M3);
+    const double gr_contribution_rad_per_orbit = 5.0e-7;
+    return gr_contribution_rad_per_orbit * fabs(gamma_minus_one) / PRTOE_FIFTH_FORCE_XI_EFF_MAX;
+}
+
+/** Vainshtein screening factor S(phi) = phi^2 / (1 + zeta phi^2). */
+static inline double prtoe_screening_S(double phi, double zeta) {
+    double phi2 = phi * phi;
+    return phi2 / (1.0 + zeta * phi2);
+}
+
+/** Effective coupling at field value phi (uses get_xi_eff). */
+static inline double prtoe_xi_eff_at_phi(struct background *pba, double phi) {
+    return get_xi_eff(pba, phi);
+}
+
+/**
+ * Local gravity / fifth-force bound (solar-system scale).
+ * Requires screened xi_eff below PRTOE_FIFTH_FORCE_XI_EFF_MAX.
+ */
+static inline int prtoe_passes_local_gravity_bounds(struct background *pba) {
+    if (!prtoe_is_physically_active(pba)) {
+        return _TRUE_;
+    }
+    if (pba->xi_prtoe > PRTOE_FIFTH_FORCE_XI_EFF_MAX) {
+        return _FALSE_;
+    }
+    /* Cosmological vacuum samples */
+    double phi_evals[3];
+    phi_evals[0] = fabs(pba->phi_ini_scf) > 1e-30 ? pba->phi_ini_scf : 1e-3;
+    phi_evals[1] = fabs(pba->phi_c_prtoe) > 1e-30 ? pba->phi_c_prtoe : 1e-2;
+    phi_evals[2] = 1e-1;
+    for (int i = 0; i < 3; i++) {
+        if (prtoe_xi_eff_at_phi(pba, phi_evals[i]) > PRTOE_FIFTH_FORCE_XI_EFF_MAX) {
+            return _FALSE_;
+        }
+    }
+    /* Environmental map: solar interior and Earth crust densities */
+    double rho_refs[2];
+    rho_refs[0] = PRTOE_RHO_SOLAR_INTERIOR_KG_M3;
+    rho_refs[1] = PRTOE_RHO_EARTH_CRUST_KG_M3;
+    for (int i = 0; i < 2; i++) {
+        if (prtoe_fifth_force_deviation_at_rho_kg_m3(pba, rho_refs[i])
+            > PRTOE_FIFTH_FORCE_XI_EFF_MAX) {
+            return _FALSE_;
+        }
+    }
+    return _TRUE_;
+}
+
+/**
+ * Post-integration fifth-force check (after background_solve).
+ * Re-validates the environmental map and bounds vacuum G_eff leakage at a=1
+ * using the integrated background field value phi(a=1).
+ */
+static inline int prtoe_post_integration_local_gravity_passes(struct background *pba) {
+    if (!prtoe_is_physically_active(pba)) {
+        return _TRUE_;
+    }
+    double rho_refs[2];
+    rho_refs[0] = PRTOE_RHO_SOLAR_INTERIOR_KG_M3;
+    rho_refs[1] = PRTOE_RHO_EARTH_CRUST_KG_M3;
+    for (int i = 0; i < 2; i++) {
+        if (prtoe_fifth_force_deviation_at_rho_kg_m3(pba, rho_refs[i])
+            > PRTOE_FIFTH_FORCE_XI_EFF_MAX) {
+            return _FALSE_;
+        }
+    }
+    if (pba->index_bg_phi_prtoe >= 0 && pba->bt_size > 0) {
+        int last = pba->bt_size - 1;
+        double phi_today =
+            pba->background_table[last * pba->bg_size + pba->index_bg_phi_prtoe];
+        double F_today = 1.0;
+        if (pba->index_bg_F_prtoe >= 0) {
+            F_today = pba->background_table[last * pba->bg_size + pba->index_bg_F_prtoe];
+        }
+        else {
+            double u = (phi_today - pba->phi_c_prtoe) / MAX(pba->delta_phi_prtoe, 1e-30);
+            double A = 0.5 * (1.0 + tanh(u));
+            F_today = 1.0 + get_xi_eff(pba, phi_today) * A;
+        }
+        if (get_xi_eff(pba, phi_today) > PRTOE_FIFTH_FORCE_XI_EFF_MAX) {
+            return _FALSE_;
+        }
+        if (fabs(1.0 / MAX(F_today, 1e-30) - 1.0) > PRTOE_FIFTH_FORCE_XI_EFF_MAX) {
+            return _FALSE_;
+        }
+    }
+    return _TRUE_;
+}
+
+/** Weight [0,1] for CDM-like clustering sourced by the PRTOE field. */
+static inline double prtoe_clustering_weight_cdm(struct background *pba) {
+    if (!prtoe_is_physically_active(pba)) {
+        return 0.0;
+    }
+    return MAX(0.0, MIN(1.0, pba->g_c_prtoe));
+}
+
+/**
+ * Clustered PRTOE density perturbation routed into the effective CDM sector.
+ * Returns 0 when unify_dark_sector=no or field is inactive.
+ */
+static inline double prtoe_unified_cluster_delta_rho(
+    struct background *pba,
+    double rho_prtoe,
+    double delta_rho_prtoe) {
+    if (!prtoe_is_physically_active(pba)
+        || pba->unify_dark_sector != _TRUE_
+        || rho_prtoe <= 0.0) {
+        return 0.0;
+    }
+    return prtoe_clustering_weight_cdm(pba) * delta_rho_prtoe;
+}
+
+/**
+ * Linearized Klein-Gordon estimate for delta_phi'' (conformal time),
+ * used in the delta_F'' chain rule when ddelta is the first derivative.
+ */
+static inline double prtoe_linearized_delta_phi_primeprime(
+    double k2, double a, double a_prime_over_a,
+    double delta_phi, double delta_phi_prime,
+    double V_phi, double F) {
+    double F_safe = MAX(F, 1e-30);
+    double a2 = MAX(a * a, 1e-60);
+    return -3.0 * a_prime_over_a * delta_phi_prime
+           - (k2 / a2) * delta_phi
+           - V_phi * delta_phi / (F_safe * a2);
+}
+
+/** Full DM/DE unification mode: PRTOE replaces separate CDM species. */
+static inline int prtoe_unified_dark_sector_active(struct background *pba) {
+    return (pba->use_prtoe == _TRUE_
+            && pba->unify_dark_sector == _TRUE_
+            && prtoe_is_physically_active(pba)) ? _TRUE_ : _FALSE_;
+}
+
+/** Whether a separate CDM fluid is evolved (false when unified). */
+static inline int prtoe_has_separate_cdm(struct background *pba) {
+    if (prtoe_unified_dark_sector_active(pba)) {
+        return _FALSE_;
+    }
+    return pba->has_cdm;
+}
+
+/**
+ * Effective Omega_cdm when unify_dark_sector=yes:
+ * standard CDM plus clustered PRTOE contribution at scale factor a.
+ */
+static inline double prtoe_effective_omega_cdm_at_a(struct background *pba,
+                                                    double rho_prtoe,
+                                                    double rho_crit) {
+    if (rho_crit <= 0.0) {
+        return pba->Omega0_cdm;
+    }
+    if (prtoe_unified_dark_sector_active(pba)) {
+        return prtoe_clustering_weight_cdm(pba) * rho_prtoe / rho_crit;
+    }
+    if (pba->unify_dark_sector != _TRUE_) {
+        return pba->Omega0_cdm;
+    }
+    double omega_prtoe_c = prtoe_clustering_weight_cdm(pba) * rho_prtoe / rho_crit;
+    return pba->Omega0_cdm + omega_prtoe_c;
 }
 
 #endif

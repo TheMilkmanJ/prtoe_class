@@ -9,7 +9,11 @@
 #define _vectors_ ((ppt->has_vectors == _TRUE_) && (index_md == ppt->index_md_vectors))
 #define _tensors_ ((ppt->has_tensors == _TRUE_) && (index_md == ppt->index_md_tensors))
 
-#define _set_source_(index) ppt->sources[index_md][index_ic * ppt->tp_size[index_md] + index][index_tau * ppt->k_size[index_md] + index_k]
+/* size_t indexing avoids 32-bit overflow when tau_size * k_size is large */
+#define _source_k_index_(tau_idx, k_idx, k_sz) \
+  ((size_t)(tau_idx) * (size_t)(k_sz) + (size_t)(k_idx))
+
+#define _set_source_(index) ppt->sources[index_md][index_ic * ppt->tp_size[index_md] + index][_source_k_index_(index_tau, index_k, ppt->k_size[index_md])]
 
 /**
  * flags for various approximation schemes

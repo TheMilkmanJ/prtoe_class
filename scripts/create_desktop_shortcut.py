@@ -86,7 +86,7 @@ $shortcut = $wshell.CreateShortcut("{win_shortcut_str}")
 $shortcut.TargetPath = "wsl.exe"
 $shortcut.Arguments = "bash -c 'cd {project_dir.as_posix()} && ./launch_cosmic.sh'"
 $shortcut.IconLocation = "{win_icon_str}"
-$shortcut.Description = "Launch CosmicDashboard in WSL pgtoe_gold environment"
+$shortcut.Description = "Launch CosmicDashboard in WSL prtoe_gold environment"
 $shortcut.WorkingDirectory = "C:\\"
 $shortcut.Save()
 """

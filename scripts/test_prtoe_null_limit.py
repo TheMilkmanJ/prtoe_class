@@ -15,8 +15,9 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 
-# Add the prtoe_class directory to the path BEFORE importing classy
-sys.path.insert(0, '/home/themilkmanj/prtoe_class/python')
+# Prefer in-tree classy.pyx path; fall back to pip-installed classy (conda python)
+_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(_root, "python"))
 
 import classy
 
@@ -38,6 +39,8 @@ def test_prtoe_null_limit():
             'output': 'tCl, lCl, mPk',
             'l_max_scalars': 2500,
             'P_k_max_h/Mpc': 10.0,
+            'a_ini_over_a_today_default': 1e-18,
+            'start_sources_at_tau_c_over_tau_h': 1e4,
         })
         cosmo_lcdm.compute()
         print("✓ LambdaCDM computation successful")
@@ -48,20 +51,22 @@ def test_prtoe_null_limit():
         cosmo_null.set({
             'use_prtoe': 'yes',
             'xi_prtoe': 0.0,
+            'beta_prtoe': 0.0,
             'V0_prtoe': 0.0,
             'm_prtoe': 0.0,
             'lambda_prtoe': 0.0,
             'zeta_prtoe': 0.0,
-            'phi_0_prtoe': 0.0,
             'phi_c_prtoe': 0.0,
             'delta_phi_prtoe': 1.0,
+            'Omega0_prtoe': 0.0,
             'Omega_cdm': 0.27,
             'Omega_b': 0.05,
             'h': 0.67,
-            'Omega_Lambda': 0.68,
             'output': 'tCl, lCl, mPk',
             'l_max_scalars': 2500,
             'P_k_max_h/Mpc': 10.0,
+            'a_ini_over_a_today_default': 1e-18,
+            'start_sources_at_tau_c_over_tau_h': 1e4,
         })
         cosmo_null.compute()
         print("✓ PRTOE null limit computation successful")
@@ -71,17 +76,24 @@ def test_prtoe_null_limit():
         bg_lcdm = cosmo_lcdm.get_background()
         bg_null = cosmo_null.get_background()
 
+        def early_omega_r(bg):
+            rho_crit = bg['(.)rho_crit']
+            rho_r = bg['(.)rho_g']
+            if '(.)rho_ur' in bg:
+                rho_r = rho_r + bg['(.)rho_ur']
+            return rho_r[0] / rho_crit[0]
+
         # Check early Omega_r
-        omega_r_early_lcdm = bg_lcdm['Omega_r'][0]
-        omega_r_early_null = bg_null['Omega_r'][0]
+        omega_r_early_lcdm = early_omega_r(bg_lcdm)
+        omega_r_early_null = early_omega_r(bg_null)
         omega_r_deviation = abs(omega_r_early_null - 1.0)
         
         print(f"   Early Omega_r (LCDM): {omega_r_early_lcdm:.8f}")
         print(f"   Early Omega_r (Null): {omega_r_early_null:.8f}")
         print(f"   Deviation from 1.0 (Null): {omega_r_deviation:.2e}")
         
-        # Power spectrum comparison
-        k = np.logspace(-3, 1, 60)
+        # Power spectrum comparison (stay within the CLASS k-grid upper bound)
+        k = np.logspace(-3, np.log10(8.0), 60)
         Pk_lcdm = np.array([cosmo_lcdm.pk(kk, 0.0) for kk in k])
         Pk_null = np.array([cosmo_null.pk(kk, 0.0) for kk in k])
         rel_diff_pk = np.abs(Pk_null - Pk_lcdm) / Pk_lcdm * 100
@@ -102,8 +114,8 @@ def test_prtoe_null_limit():
             max_cl_diff = float('nan')
 
         # Check for NaN values
-        has_nan_lcdm = any(np.isnan(bg_lcdm['Omega_r']))
-        has_nan_null = any(np.isnan(bg_null['Omega_r']))
+        has_nan_lcdm = any(np.isnan(bg_lcdm['(.)rho_crit']))
+        has_nan_null = any(np.isnan(bg_null['(.)rho_crit']))
         has_nan_pk = any(np.isnan(Pk_lcdm)) or any(np.isnan(Pk_null))
         
         print(f"   NaN check - LCDM background: {has_nan_lcdm}")
@@ -180,28 +192,28 @@ def test_prtoe_active():
         cosmo_active = classy.Class()
         cosmo_active.set({
             'use_prtoe': 'yes',
-            'xi_prtoe': 0.1,
-            'V0_prtoe': 1e-10,
-            'm_prtoe': 1e-4,
-            'lambda_prtoe': 0.1,
+            'xi_prtoe': 1e-6,
+            'V0_prtoe': 0.68,
+            'm_prtoe': 0.05,
+            'lambda_prtoe': 0.05,
             'zeta_prtoe': 1.0,
-            'phi_0_prtoe': 1.0,
             'phi_c_prtoe': 0.0,
             'delta_phi_prtoe': 1.0,
             'Omega_cdm': 0.27,
             'Omega_b': 0.05,
             'h': 0.67,
-            'Omega_Lambda': 0.68,
             'output': 'tCl, mPk',
             'l_max_scalars': 500,
             'P_k_max_h/Mpc': 5.0,
+            'a_ini_over_a_today_default': 1e-18,
+            'start_sources_at_tau_c_over_tau_h': 1e4,
         })
         cosmo_active.compute()
         print("✓ PRTOE active parameters computation successful")
         
         # Check for basic output
         bg = cosmo_active.get_background()
-        if not any(np.isnan(bg['Omega_r'])):
+        if not any(np.isnan(bg['(.)rho_crit'])):
             print("✓ No NaN values in background")
             return True
         else:

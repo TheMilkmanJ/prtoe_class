@@ -234,7 +234,7 @@ def resolve_cobaya_runtime(engine: Optional[dict] = None) -> tuple:
 
     if not python_exe:
         # Search candidate envs in order
-        for env_name in ["pgtoe_gold", "cobaya_prod", "pgtoe_plat", "prtoe_gold"]:
+        for env_name in ["prtoe_gold", "pgtoe_gold", "cobaya_prod", "pgtoe_plat"]:
             pgtoe_py = os.path.join(DEFAULT_CONDA_ROOT, "envs", env_name, "bin", "python3")
             if os.path.isfile(pgtoe_py):
                 python_exe = pgtoe_py
@@ -285,7 +285,7 @@ def detect_run_crash_in_log(log_path) -> Optional[str]:
                 return (
                     "PolyChord/MPI crash (segmentation fault). "
                     "Usually caused by mixing system mpirun with the Cobaya conda MPI libraries. "
-                    "Restart the dashboard via ./launch_cosmic.sh so pgtoe_gold Python+MPI are used."
+                    "Restart the dashboard via ./launch_cosmic.sh so prtoe_gold Python+MPI are used."
                 )
             return "Cobaya/PolyChord crashed with a segmentation fault. See chains/*.log for details."
 
@@ -9175,7 +9175,7 @@ async def get_provenance_ledger(config_name: str = "uploaded_config.yaml"):
         "compiler_flags": compiler_flags,
         "git_hash": git_hash,
         "python_version": sys.version.split()[0],
-        "conda_environment": os.environ.get('CONDA_DEFAULT_ENV', 'pgtoe_gold'),
+        "conda_environment": os.environ.get('CONDA_DEFAULT_ENV', 'prtoe_gold'),
         "config_file": config_name,
         "config_hash": config_hash,
         "machine": {

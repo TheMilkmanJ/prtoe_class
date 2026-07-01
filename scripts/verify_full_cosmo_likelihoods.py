@@ -44,13 +44,15 @@ DATA_CHECKS: dict[str, list[str]] = {
     "sn.union3": ["sn_data/Union3"],
     "des_y1.clustering": ["des_data/DES_1YR_final.dataset"],
     "des_y1.shear": ["des_data/DES_1YR_final.dataset"],
+    "des_y3.cosmic_shear": [],  # checked separately under DES_Y3_ROOT
+    "des_y3.combo_xi_gg": [],
 }
 
 UNAVAILABLE = {
     "kids": "No standard Cobaya KiDS likelihood module (dashboard uses reference μ/σ only).",
     "planck_2018_cluster_counts": "Not in standard Cobaya; old chains used invalid name.",
-    "des_y3_clustering": "Use des_y3.combo_xi_gg after CosmoLike compile (see des_y3/README.md).",
-    "des_y3_shear": "Use des_y3.cosmic_shear after CosmoLike compile.",
+    "des_y3_clustering": "Installed as des_y3.combo_xi_gg — run scripts/install_des_y3.sh first.",
+    "des_y3_shear": "Installed as des_y3.cosmic_shear — run scripts/install_des_y3.sh first.",
     "eboss_dr16_lya_auto": "Use bao.sdss_dr16_baoplus_lyauto or bao.desi_2024_eboss_bao_lya.",
     "eboss_dr16_lya_cross": "Use bao.sdss_dr16_baoplus_lyxqso or bao.desi_2024_eboss_bao_lya.",
     "desi_y5_forecast": "Forecast/mock only — sn.desy5 is real DES SN data, not a forecast.",
@@ -58,17 +60,32 @@ UNAVAILABLE = {
 }
 
 
+DES_Y3_DATA = Path("/home/themilkmanj/cobaya_packages_clean/des_y3/data")
+
+
 def check_data_files() -> tuple[list[str], list[str]]:
     ok, missing = [], []
     for like, paths in DATA_CHECKS.items():
         if not paths:
-            ok.append(like)
+            if like.startswith("des_y3."):
+                des_files = ["des_y3_real.dataset", "des_y3_unblinded_final.txt",
+                             "des_y3_cov_unblinded_final.txt"]
+                bad = [f for f in des_files if not (DES_Y3_DATA / f).exists()]
+                if bad:
+                    missing.append(f"{like}: {', '.join(bad)}")
+                else:
+                    ok.append(like)
+            else:
+                ok.append(like)
             continue
         bad = [p for p in paths if not (DATA / p).exists()]
         if bad:
             missing.append(f"{like}: {', '.join(bad)}")
         else:
             ok.append(like)
+    des_so = Path("/home/themilkmanj/cobaya_packages_clean/des_y3/interface/cosmolike_des_y3_interface.so")
+    if not des_so.exists():
+        missing.append(f"des_y3 interface: {des_so} (run scripts/install_des_y3.sh)")
     return ok, missing
 
 

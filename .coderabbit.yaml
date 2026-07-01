@@ -1,0 +1,52 @@
+# Whitelist PRTOE core files only. Do NOT prefix with "!**/*" — that pattern
+# makes the local `cr` CLI fail with "All files are ignored".
+reviews:
+  path_filters:
+    - "source/perturbations.c"
+    - "source/background.c"
+    - "include/perturbations.h"
+    - "include/background.h"
+
+  path_instructions:
+    - path: "**/perturbations.c"
+      instructions: |
+        Focus on PRTOE scalar-field and metric perturbation logic only.
+
+        Verify:
+        - Newtonian and synchronous initial conditions couple delta_prtoe to the
+          metric constraint before solving alpha/phi (Section 10.4).
+        - prtoe_add_to_newtonian_constraint() uses PRTOE stress-energy
+          (delta_rho_scf, rho_plus_p_theta_scf), not raw field seeds.
+        - Stress-energy formulas match the runtime block in perturbations_derivs.
+        - PRTOE unified-dark-sector weighting is consistent with background mode.
+        - Source-array indexing uses size_t-safe macros (_source_k_index_).
+        - No dimensional or gauge inconsistencies between IC setup and evolution.
+
+    - path: "**/background.c"
+      instructions: |
+        Focus on PRTOE background evolution and coupling functions (F, F_phi, etc.).
+
+        Verify:
+        - prtoe_compute_quantities() and activation/screening are consistent with
+          the action and de_mode (prtoe_active vs prtoe_frozen vs lambda_limit).
+        - Background rho_prtoe, p_prtoe, dphi_prtoe, dV_scf feed perturbations correctly.
+        - Null-limit (xi, beta, Omega0 → 0) recovers standard LCDM background.
+        - No division-by-zero or unguarded activation at field extrema.
+
+    - path: "**/perturbations.h"
+      instructions: |
+        Focus on PRTOE perturbation indices, macros, and API declarations.
+
+        Verify:
+        - index_pt_delta_prtoe / index_pt_ddelta_prtoe align with vector_init.
+        - _source_k_index_ / _set_source_ size_t casting prevents 32-bit overflow.
+        - Declarations match implementations in source/perturbations.c.
+
+    - path: "**/background.h"
+      instructions: |
+        Focus on PRTOE parameter definitions and background index declarations.
+
+        Verify:
+        - PRTOE parameter structs and dark_energy_mode enum match input.c parsing.
+        - index_bg_* indices for rho_prtoe, F_prtoe, dphi_prtoe are complete and
+          consistent with background.c allocation and perturbations.c usage.

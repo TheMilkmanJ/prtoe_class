@@ -102,7 +102,7 @@ We have added a custom desktop shortcut featuring a high-fidelity glowing spiral
 
 To manually recreate or redeploy this shortcut, run:
 ```bash
-conda activate pgtoe_gold
+conda activate prtoe_gold
 python scripts/create_desktop_shortcut.py
 ```
 

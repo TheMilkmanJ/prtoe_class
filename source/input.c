@@ -2371,7 +2371,9 @@ int input_read_parameters_species(struct file_content * pfc,
 
   /** - Define local variables */
   int flag1, flag2, flag3;
+  int flag_omega0_prtoe = _FALSE_;
   double param1, param2, param3;
+  double param_omega0_prtoe = 0.;
   char string1[_ARGUMENT_LENGTH_MAX_];
   int fileentries;
   int N_ncdm=0, n, entries_read;
@@ -3215,12 +3217,23 @@ int input_read_parameters_species(struct file_content * pfc,
   class_call(parser_read_double(pfc,"Omega_Lambda",&param1,&flag1,errmsg),
              errmsg,
              errmsg);
+  if (flag1 == _FALSE_) {
+    class_call(parser_read_double(pfc,"Omega_lambda",&param1,&flag1,errmsg),
+               errmsg,
+               errmsg);
+  }
   class_call(parser_read_double(pfc,"Omega_fld",&param2,&flag2,errmsg),
              errmsg,
              errmsg);
   class_call(parser_read_double(pfc,"Omega_scf",&param3,&flag3,errmsg),
              errmsg,
              errmsg);
+  class_call(parser_read_double(pfc,"Omega0_prtoe",&param_omega0_prtoe,&flag_omega0_prtoe,errmsg),
+             errmsg,
+             errmsg);
+  class_test((flag_omega0_prtoe == _TRUE_) && (param_omega0_prtoe < 0.0),
+             errmsg,
+             "You cannot set the PRTOE density to negative values.");
   /* Test */
   class_test((flag1 == _TRUE_) && (flag2 == _TRUE_) && ((flag3 == _FALSE_) || (param3 >= 0.)),
              errmsg,
@@ -3262,9 +3275,29 @@ int input_read_parameters_species(struct file_content * pfc,
   }
   /* Step 2 */
   if (pba->use_prtoe == _TRUE_) {
-    /* For PRTOE, we will handle the budget differently below */
-    /* Temporarily fill with Lambda, then transfer to PRTOE if active */
-    pba->Omega0_lambda= 1. - pba->Omega0_k - Omega_tot;
+    if (flag_omega0_prtoe == _TRUE_) {
+      pba->Omega0_prtoe = param_omega0_prtoe;
+      Omega_tot += pba->Omega0_prtoe;
+    }
+    if (flag1 == _FALSE_) {
+      /* Null limit (Omega0_prtoe=0) or no explicit PRTOE DE: Lambda fills residual.
+       * Active PRTOE (Omega0_prtoe>0) closes the budget via the PRTOE component. */
+      if ((flag_omega0_prtoe == _FALSE_) || (param_omega0_prtoe == 0.0)) {
+        pba->Omega0_lambda = 1. - pba->Omega0_k - Omega_tot;
+        if (input_verbose > 0) {
+          printf(" -> PRTOE null-limit budget: adjusting Omega_Lambda = %g\n",
+                 pba->Omega0_lambda);
+        }
+      }
+      else if (param_omega0_prtoe > 0.0) {
+        class_test(fabs(1.0 - pba->Omega0_k - Omega_tot) > 1e-4,
+                   errmsg,
+                   "Explicit Omega0_prtoe=%e leaves the density budget unclosed (sum of Omega_i=%e, residual=%e). Adjust Omega0_prtoe or set Omega_Lambda explicitly.",
+                   param_omega0_prtoe,
+                   pba->Omega0_k + Omega_tot,
+                   1.0 - pba->Omega0_k - Omega_tot);
+      }
+    }
   }
   else if (flag1 == _FALSE_) {
     /* Fill with Lambda */
@@ -3406,8 +3439,9 @@ int input_read_parameters_species(struct file_content * pfc,
   pba->lambda_prtoe = 0.05;
   pba->m_prtoe = 0.05;  /* Scalar field mass */
   pba->V0_prtoe = 0.685;
-  pba->Omega0_prtoe = 0.0;  /* Default: PRTOE off, use Lambda for dark energy */
-  pba->phi_ini_scf = 1.0;
+  if (flag_omega0_prtoe == _FALSE_) {
+    pba->Omega0_prtoe = 0.0;  /* Default: PRTOE off, use Lambda for dark energy */
+  }
   pba->phi_c_prtoe = 0.0;
   pba->delta_phi_prtoe = 0.1;
   pba->zeta_prtoe = 1.0;
@@ -3415,11 +3449,14 @@ int input_read_parameters_species(struct file_content * pfc,
   pba->alpha_prtoe = 1.0;
   pba->M_ew_prtoe = 100.0;
   pba->H_vac_floor = 64.1218;
-  pba->sigma_prtoe = 0.0;
-  pba->rho0_prtoe = 1.0;
+  pba->sigma_prtoe = 0.1;
+  pba->rho0_prtoe = 1.0e3;
   pba->gamma_prtoe = 0.05;
+  pba->Omega0_cdm_absorbed = 0.0;
   pba->g_b_prtoe = 1.0;
   pba->g_c_prtoe = 1.0;
+  pba->unify_dark_sector = _FALSE_;
+  pba->prtoe_explicit_null_de = _FALSE_;
   pba->delta_prtoe = 0.0;
   
   class_read_double("zeta_prtoe", pba->zeta_prtoe);
@@ -3432,6 +3469,7 @@ int input_read_parameters_species(struct file_content * pfc,
   class_read_double("rho0_prtoe", pba->rho0_prtoe);
   class_read_double("gamma_prtoe", pba->gamma_prtoe);
   class_read_double("g_c_prtoe", pba->g_c_prtoe);
+  class_read_flag("unify_dark_sector", pba->unify_dark_sector);
 
   /* PRTOE v1.0 Production Parameters — canonical names only */
   class_read_flag("use_prtoe",        pba->use_prtoe);
@@ -3441,10 +3479,19 @@ int input_read_parameters_species(struct file_content * pfc,
   class_read_double("m_prtoe",        pba->m_prtoe);
   class_read_double("V0_prtoe",       pba->V0_prtoe);
   class_read_double("delta_prtoe",    pba->delta_prtoe);
-  class_read_double("phi_c_prtoe",    pba->phi_c_prtoe);
+  /* phi_c_prtoe: activation centre; phi_0_prtoe: deprecated Cobaya alias */
+  class_read_double_one_of_two("phi_c_prtoe", "phi_0_prtoe", pba->phi_c_prtoe);
   class_read_double("delta_phi_prtoe", pba->delta_phi_prtoe);
   class_read_double("zeta_prtoe",     pba->zeta_prtoe);
-  class_read_double("Omega0_prtoe",   pba->Omega0_prtoe);
+  if (flag_omega0_prtoe == _TRUE_) {
+    pba->Omega0_prtoe = param_omega0_prtoe;
+    if (param_omega0_prtoe == 0.0) {
+      pba->prtoe_explicit_null_de = _TRUE_;
+    }
+  }
+  else {
+    class_read_double("Omega0_prtoe", pba->Omega0_prtoe);
+  }
 
   if (pba->use_prtoe == _TRUE_) {
     /* Scale V0 to CLASS internal units (H0-normalized) */
@@ -3457,39 +3504,74 @@ int input_read_parameters_species(struct file_content * pfc,
      *       the cobaya YAML converts it via: beta_prtoe = 10^log_beta_prtoe.
      *       No /H0 rescaling is applied here to avoid double-counting. */
 
-    /* Allow smaller xi for null limit testing
-    * For null limit tests, xi can be very small (even 0)
-    * The strict DHOST Stability Wedge boundary is [1e-7, 1.2e-5] for active PRTOE
-    * but we allow xi < 1e-7 for null limit validation
+    /* Allow smaller xi for null limit testing.
+     * For null limit tests, xi can be very small (even 0).
+     * The strict DHOST Stability Wedge boundary is [1e-7, 1.2e-5] for active PRTOE,
+     * but we allow xi < 1e-7 for null limit validation. */
     class_test(pba->xi_prtoe > 1.2e-5,
                errmsg,
                "PRTOE xi parameter %e exceeds the upper bound of the DHOST Stability Wedge [1e-7, 1.2e-5]",
                pba->xi_prtoe);
-    */
+    class_test((pba->xi_prtoe > 1e-8) && (pba->xi_prtoe < 1e-7),
+               errmsg,
+               "Active PRTOE requires xi_prtoe in the DHOST Stability Wedge [1e-7, 1.2e-5]; use xi_prtoe <= 1e-8 for null-limit tests.");
 
     /* === PRTOE Dark Energy Normalization ===
-     * When PRTOE is active (xi > 1e-8), it replaces Lambda as the dark energy.
+     * When PRTOE is active (xi >= 1e-7), it replaces Lambda as the dark energy.
      * For null limit tests (xi <= 1e-8), keep Lambda.
      */
-    if (pba->use_prtoe == _TRUE_ && pba->xi_prtoe > 1e-8) {
-        /* PRTOE is active → it provides the dark energy
-         * Set Omega0_prtoe from Omega0_lambda (or default to 0.7)
-         */
-        if (pba->Omega0_lambda > 0.0) {
+    if (pba->use_prtoe == _TRUE_ &&
+        pba->xi_prtoe >= 1e-7 &&
+        ((flag_omega0_prtoe == _FALSE_) || (pba->Omega0_prtoe > 0.0))) {
+        /* PRTOE is active → it provides the dark energy */
+        if (flag_omega0_prtoe == _FALSE_) {
+            class_test(pba->Omega0_lambda <= 0.0,
+                       errmsg,
+                       "Cannot infer a positive Omega0_prtoe from the dark-energy budget (%e). Please set Omega0_prtoe explicitly.",
+                       pba->Omega0_lambda);
             pba->Omega0_prtoe = pba->Omega0_lambda;
-        } else {
-            pba->Omega0_prtoe = 0.7;  /* Default dark energy density */
         }
         pba->Omega0_lambda = 0.0;  /* Remove Lambda */
         pba->has_lambda = _FALSE_;
+        pba->prtoe_explicit_null_de = _FALSE_;
     } else {
         /* Null limit or PRTOE off → use Lambda */
         pba->Omega0_prtoe = 0.0;
         /* For null limit, ensure field doesn't contribute energy density */
         pba->V0_prtoe = 0.0;
+        pba->beta_prtoe = 0.0;
     }
     
-    fprintf(stdout, " -> PRTOE Framework Activated (v1.0 Screened Model Bound Loaded)\n");
+    /** Unified dark sector: absorb CDM budget into PRTOE field (single dark species) */
+    if (pba->unify_dark_sector == _TRUE_ && prtoe_is_physically_active(pba)) {
+      double Omega0_cdm_floor =
+        (ppt->gauge == synchronous) ? ppr->Omega0_cdm_min_synchronous : 0.0;
+      if (pba->Omega0_cdm > Omega0_cdm_floor) {
+        pba->Omega0_cdm_absorbed = pba->Omega0_cdm - Omega0_cdm_floor;
+        if (pba->Omega0_cdm_absorbed < 0.0) {
+          pba->Omega0_cdm_absorbed = 0.0;
+        }
+        pba->Omega0_prtoe += pba->Omega0_cdm_absorbed;
+        pba->Omega0_cdm -= pba->Omega0_cdm_absorbed;
+      }
+      if (pba->g_c_prtoe < 1.0) {
+        pba->g_c_prtoe = 1.0;
+      }
+      if (input_verbose > 0) {
+        fprintf(stdout,
+                " -> PRTOE unified dark sector: Omega_cdm=%.4f -> Omega0_prtoe=%.4f (single field)\n",
+                pba->Omega0_cdm_absorbed, pba->Omega0_prtoe);
+      }
+    }
+
+    if (input_verbose > 0) {
+      if (prtoe_is_physically_active(pba)) {
+        fprintf(stdout, " -> PRTOE Framework Activated (v1.0 Screened Model Bound Loaded)\n");
+      }
+      else {
+        fprintf(stdout, " -> PRTOE null-limit mode (use_prtoe=yes, couplings inactive — LambdaCDM path)\n");
+      }
+    }
   }
 
   return _SUCCESS_;
@@ -6045,7 +6127,30 @@ int input_default_params(struct background *pba,
   /** 9.b.3) Tuning parameter */
   pba->scf_tuning_index = 0;
 
-  /* PRTOE defaults already set above before parameter reading */
+  /* PRTOE v1.0 defaults — single initialization point for all input paths */
+  pba->use_prtoe = _FALSE_;
+  pba->Omega0_prtoe = 0.0;
+  pba->xi_prtoe = 1.0e-7;
+  pba->beta_prtoe = 1.0e-6;
+  pba->lambda_prtoe = 0.05;
+  pba->m_prtoe = 0.05;
+  pba->V0_prtoe = 0.685;
+  pba->phi_c_prtoe = 0.0;
+  pba->delta_phi_prtoe = 0.1;
+  pba->zeta_prtoe = 1.0;
+  pba->M_prtoe = 1.0;
+  pba->alpha_prtoe = 1.0;
+  pba->M_ew_prtoe = 100.0;
+  pba->H_vac_floor = 64.1218;
+  pba->sigma_prtoe = 0.1;
+  pba->rho0_prtoe = 1.0e3;
+  pba->gamma_prtoe = 0.05;
+  pba->Omega0_cdm_absorbed = 0.0;
+  pba->g_b_prtoe = 1.0;
+  pba->g_c_prtoe = 1.0;
+  pba->unify_dark_sector = _FALSE_;
+  pba->prtoe_explicit_null_de = _FALSE_;
+  pba->delta_prtoe = 0.0;
   pba->R_curvature = 0.0;      /* Ricci scalar R for PRTOE field evolution */
 
   /**

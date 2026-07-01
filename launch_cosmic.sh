@@ -20,16 +20,21 @@ TUNNEL_LOG="$SCRIPT_DIR/chains/dashboard_tunnel.log"
 PORT=8000
 RESTART_DELAY=5   # seconds to wait before restarting a crashed service
 
-# Set Python path to pgtoe_gold conda environment directly to avoid shell function activation crashes
-if [ -f "/home/themilkmanj/miniconda3/envs/pgtoe_gold/bin/python3" ]; then
-    PYTHON="/home/themilkmanj/miniconda3/envs/pgtoe_gold/bin/python3"
-elif [ -f "$HOME/miniconda3/envs/pgtoe_gold/bin/python3" ]; then
-    PYTHON="$HOME/miniconda3/envs/pgtoe_gold/bin/python3"
-elif [ -f "$HOME/anaconda3/envs/pgtoe_gold/bin/python3" ]; then
-    PYTHON="$HOME/anaconda3/envs/pgtoe_gold/bin/python3"
-elif command -v conda &>/dev/null; then
-    PYTHON=$(conda run -n pgtoe_gold --no-capture-output python3 2>/dev/null || command -v python3 || command -v python)
-elif [ -n "${CONDA_PREFIX:-}" ]; then
+# Set Python path to prtoe_gold conda environment directly to avoid shell function activation crashes
+PYTHON=""
+for _env in prtoe_gold pgtoe_gold; do
+  for _root in "/home/themilkmanj/miniconda3" "$HOME/miniconda3" "$HOME/anaconda3"; do
+    if [ -f "${_root}/envs/${_env}/bin/python3" ]; then
+      PYTHON="${_root}/envs/${_env}/bin/python3"
+      break 2
+    fi
+  done
+done
+if [ -z "$PYTHON" ] && command -v conda &>/dev/null; then
+    PYTHON=$(conda run -n prtoe_gold --no-capture-output python3 2>/dev/null \
+      || conda run -n pgtoe_gold --no-capture-output python3 2>/dev/null \
+      || command -v python3 || command -v python)
+elif [ -z "$PYTHON" ] && [ -n "${CONDA_PREFIX:-}" ]; then
     PYTHON="${CONDA_PREFIX}/bin/python3"
 else
     PYTHON=$(command -v python3 || command -v python)

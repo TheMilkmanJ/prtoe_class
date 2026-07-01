@@ -10,12 +10,12 @@ params = {
     'zeta_prtoe': 1.0,
     'lambda_prtoe': 0.1,
     'm_prtoe': 0.1,
-    'phi_0_prtoe': 0.1,
+    'phi_c_prtoe': 0.1,
     
     'H0': 67.0,
     'Omega_b': 0.05,
     'Omega_cdm': 0.27,
-    'Omega_lambda': 0.68,
+    'Omega_Lambda': 0.68,
     
     'output': 'tCl',
     'l_max_scalars': 10,
